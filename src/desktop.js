@@ -1,0 +1,126 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { open, save } from '@tauri-apps/plugin-dialog';
+import { readFile } from '@tauri-apps/plugin-fs';
+import { STRUCTURE_FORMATS } from './structure.js';
+
+export const desktop = isTauri();
+export const PACK_ARCHIVE_FORMATS = ['zip', 'jar'];
+
+const types = {
+  nbt: 'Minecraft 原版结构',
+  litematic: 'Litematica 投影',
+  png: 'PNG 图片',
+};
+
+export function safeFilename(name) {
+  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'build';
+}
+
+export function fileInfo(path) {
+  const filename = path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1);
+  const dot = filename.lastIndexOf('.');
+  if (dot < 0) return { filename, name: filename, extension: '' };
+  return { filename, name: filename.slice(0, dot), extension: filename.slice(dot + 1).toLowerCase() };
+}
+
+export function structureFileInfo(path) {
+  if (typeof path !== 'string') throw new Error('请提供结构文件路径。');
+  const { name, extension } = fileInfo(path);
+  if (!STRUCTURE_FORMATS.includes(extension)) throw new Error('请选择 .nbt 或 .litematic 文件。');
+  return { name, format: extension };
+}
+
+export async function readBrowserStructureFile(file) {
+  return { path: null, ...structureFileInfo(file.name), bytes: new Uint8Array(await file.arrayBuffer()) };
+}
+
+export async function openProject() {
+  if (desktop) {
+    const path = await open({ filters: [{ name: 'Minecraft 结构和 Litematica 投影', extensions: STRUCTURE_FORMATS }] });
+    return path ? { path, ...structureFileInfo(path), bytes: await readFile(path) } : null;
+  }
+  const file = await new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = STRUCTURE_FORMATS.map(extension => '.' + extension).join(',');
+    input.addEventListener('change', () => resolve(input.files[0]));
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
+  return file ? readBrowserStructureFile(file) : null;
+}
+
+export async function saveFile(bytes, name, extension) {
+  if (desktop) {
+    const path = await save({ defaultPath: `${name}.${extension}`, filters: [{ name: types[extension], extensions: [extension] }] });
+    if (!path) return null;
+    if (STRUCTURE_FORMATS.includes(extension) && structureFileInfo(path).format !== extension) {
+      throw new Error('文件扩展名需要与保存格式一致。');
+    }
+    await invoke('save_document', { path, data: encodeBase64(bytes) });
+    return path;
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${name}.${extension}`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return link.download;
+}
+
+export async function readStructureFile(path) {
+  const info = structureFileInfo(path);
+  const bytes = new Uint8Array(await invoke('read_structure_file', { path }));
+  return { path, ...info, bytes };
+}
+
+export function saveStructureFile(bytes, path, format, overwrite) {
+  return invoke('save_structure_file', { path, format, overwrite, data: encodeBase64(bytes) });
+}
+
+export const packsOnDisk = {
+  list: () => invoke('list_resource_packs'),
+  setOrder: ids => invoke('set_resource_pack_order', { ids }),
+  read: async id => new Uint8Array(await invoke('read_resource_pack', { id })),
+  remove: id => invoke('remove_resource_pack', { id }),
+  async choose(kind) {
+    if (kind === 'folder') {
+      const folder = await open({ directory: true });
+      return folder ? [folder] : [];
+    }
+    return await open({
+      multiple: true,
+      filters: [{ name: '资源包 ZIP / Minecraft JAR', extensions: PACK_ARCHIVE_FORMATS }],
+    }) ?? [];
+  },
+  import: path => invoke('import_resource_pack', { path }),
+};
+
+export const minecraftTranslations = (version, locale) => invoke('minecraft_translations', { version, locale });
+
+export async function connectMcp(dispatch) {
+  let queue = Promise.resolve();
+  await listen('builder-mcp-request', event => {
+    const { id, name, arguments: args } = event.payload;
+    queue = queue.then(async () => {
+      let reply;
+      try { reply = { value: await dispatch(name, args) }; }
+      catch (error) { reply = { error: error instanceof Error ? error.message : String(error) }; }
+      await invoke('mcp_reply', { id, ...reply });
+    }).catch(error => console.error('MCP reply failed', error));
+  });
+  return invoke('mcp_ready');
+}
+
+export function encodeBase64(bytes) {
+  if (typeof bytes.toBase64 === 'function') return bytes.toBase64();
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += 8192) parts.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
+  return btoa(parts.join(''));
+}
+
+export function decodeBase64(data) {
+  return Uint8Array.fromBase64 ? Uint8Array.fromBase64(data) : Uint8Array.from(atob(data), ch => ch.charCodeAt(0));
+}

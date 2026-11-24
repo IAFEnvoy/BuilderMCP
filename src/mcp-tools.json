@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "cell": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": -1000000, "maximum": 1000000 }, "description": "Minecraft [x, y, z] cell. Y points up, +X east, +Z south." },
+    "vector": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" }, "description": "[x, y, z] in viewport world units." },
+    "format": { "enum": ["nbt", "litematic"] },
+    "discard": { "type": "boolean", "default": false, "description": "Allow replacing the scene if it contains unsaved edits." },
+    "size": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 1, "maximum": 1000000 }, "description": "Width, height and depth in blocks." },
+    "state": { "anyOf": [
+      { "type": "string", "description": "Block resource ID, e.g. minecraft:stone_bricks." },
+      { "type": "object", "required": ["name"], "additionalProperties": false, "properties": {
+        "name": { "type": "string" }, "properties": { "type": "object", "additionalProperties": { "type": "string" } }
+      } }
+    ] }
+  },
+  "tools": [
+    {
+      "name": "get_scene", "description": "Read the current project name, file path and format, whether it has unsaved edits, Java DataVersion, bounds, block and selection counts, camera, and globally installed resource packs.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false }
+    },
+    {
+      "name": "new_project", "description": "Start a new empty project in the editor. Returns its name, DataVersion and block count.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "data_version": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Minecraft Java DataVersion. Defaults to the current project's version." },
+        "discard_unsaved": { "$ref": "#/$defs/discard" }
+      } }
+    },
+    {
+      "name": "open_project", "description": "Open a Minecraft Java .nbt structure or .litematic file as the active project without showing a file picker. Returns the file path, format, DataVersion and block count.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Absolute file path on the machine running Builder MCP." },
+        "discard_unsaved": { "$ref": "#/$defs/discard" }
+      } }
+    },
+    {
+      "name": "save_project", "description": "Save the active project as .nbt or .litematic without showing a file picker. With no path, update the active file when its format matches, or create a file in the app's exports directory. Returns the saved path, format, byte size and block count.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Absolute destination path on the machine running Builder MCP. Its extension selects the default format." },
+        "format": { "$ref": "#/$defs/format", "description": "Defaults to the path's format, then the active format, then litematic." },
+        "overwrite": { "type": "boolean", "description": "Replace an existing destination. Defaults to true when saving back to the active file with no path, and false for an explicit path." }
+      } }
+    },
+    {
+      "name": "list_blocks", "description": "Read placed blocks and their states, optionally inside an inclusive box. Results are ordered by Y, Z, X and paginated.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" },
+        "offset": { "type": "integer", "minimum": 0 }, "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }, "dependentRequired": { "from": ["to"], "to": ["from"] } }
+    },
+    {
+      "name": "search_palette", "description": "Search the loaded block catalog by display name or resource ID, optionally limited to one mod ID. Returns default states and allowed property values.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "query": { "type": "string", "maxLength": 256 },
+        "mod_id": { "type": "string", "pattern": "^[a-z0-9_.-]+$", "description": "Exact block namespace, such as minecraft or create." },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+      } }
+    },
+    {
+      "name": "set_blocks", "description": "Set individual cells in one undoable operation. An existing cell may be replaced. Use a null state or minecraft:air to remove a cell.",
+      "annotations": { "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["blocks"], "additionalProperties": false, "properties": {
+        "blocks": { "type": "array", "maxItems": 20000, "items": { "type": "object", "required": ["pos", "state"], "additionalProperties": false,
+          "properties": { "pos": { "$ref": "#/$defs/cell" }, "state": { "anyOf": [{ "$ref": "#/$defs/state" }, { "type": "null" }] } } } }
+      } }
+    },
+    {
+      "name": "fill_box", "description": "Fill an inclusive box with a block state. If hollow is true, fill the shell and clear the interior. Undo restores all affected cells.",
+      "annotations": { "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["from", "to", "state"], "additionalProperties": false, "properties": {
+        "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" }, "state": { "$ref": "#/$defs/state" }, "hollow": { "type": "boolean" }
+      } }
+    },
+    {
+      "name": "remove_box", "description": "Remove blocks inside an inclusive box. This operation can be undone.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["from", "to"], "additionalProperties": false, "properties": {
+        "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" }
+      } }
+    },
+    {
+      "name": "select_box", "description": "Select all existing blocks inside an inclusive box in the editor.",
+      "annotations": { "destructiveHint": false, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["from", "to"], "additionalProperties": false, "properties": {
+        "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" }
+      } }
+    },
+    {
+      "name": "transform_selection", "description": "Move, rotate about the Y axis clockwise as viewed from above, and resize the current selection. Rotation precedes resizing. The minimum corner stays fixed unless origin is specified. Cells outside the selection are preserved.",
+      "annotations": { "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "origin": { "$ref": "#/$defs/cell" }, "rotation": { "enum": [-270, -180, -90, 0, 90, 180, 270] }, "size": { "$ref": "#/$defs/size" }
+      } }
+    },
+    {
+      "name": "undo_redo", "description": "Undo or redo the last project edit, including edits made in the editor.",
+      "annotations": { "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["action"], "additionalProperties": false, "properties": {
+        "action": { "enum": ["undo", "redo"] }
+      } }
+    },
+    {
+      "name": "set_camera", "description": "Frame the current project using a preset, or set an explicit camera position and target. Returns the resulting camera state.",
+      "annotations": { "destructiveHint": false, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "preset": { "enum": ["isometric", "front", "right", "top"] }, "position": { "$ref": "#/$defs/vector" }, "target": { "$ref": "#/$defs/vector" }
+      }, "oneOf": [{ "required": ["preset"], "not": { "anyOf": [{ "required": ["position"] }, { "required": ["target"] }] } }, { "required": ["position", "target"], "not": { "required": ["preset"] } }] }
+    },
+    {
+      "name": "capture_screenshot", "description": "Capture the live Three.js viewport and return a PNG as MCP image content. Optionally limit the width while keeping the aspect ratio.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "width": { "type": "integer", "minimum": 256, "maximum": 1920 } } }
+    },
+    {
+      "name": "render_block_states", "description": "Preview placed block models using the active resource packs. Returns one 256×256 PNG with a transparent background per state in input order. Missing block models or textures use a purple and black checkerboard. Air returns an empty image. Uses the default isometric angle unless follow_camera is true. Each image frames its block independently.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["states"], "additionalProperties": false, "properties": {
+        "states": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/state" } },
+        "follow_camera": { "type": "boolean", "default": false, "description": "Use the live viewport camera orientation with the block centered in the preview." }
+      } }
+    },
+    {
+      "name": "export_structure", "description": "Export the current project to a gzip-compressed Minecraft Java structure NBT or Litematica file. Returns the local absolute path saved under the app's exports directory.",
+      "annotations": { "destructiveHint": false, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["format"], "additionalProperties": false, "properties": { "format": { "enum": ["nbt", "litematic"] } } }
+    }
+  ]
+}

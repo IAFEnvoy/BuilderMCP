@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#191d24" />
+    <link rel="icon" href="/src-tauri/icons/32x32.png" />
+    <title>方块工坊 · Builder MCP</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="project-tab" id="project-settings" title="项目设置">
+        <i data-icon="file-box"></i><span id="project-name">未命名建筑</span><span id="project-dirty" class="dirty-dot" hidden></span>
+        <i data-icon="chevron-down" class="chevron"></i>
+      </button>
+      <div class="topbar-actions">
+        <button class="button quiet" id="project-new" title="新建 (Ctrl+N)" aria-keyshortcuts="Control+n"><i data-icon="file-plus"></i><span>新建</span></button>
+        <button class="button quiet" id="project-open" title="打开原版结构或 Litematica 投影 (Ctrl+O)" aria-keyshortcuts="Control+o"><i data-icon="folder-open"></i><span>打开</span></button>
+        <button class="button quiet" id="project-save" title="保存 (Ctrl+S)" aria-keyshortcuts="Control+s"><i data-icon="save"></i><span>保存</span></button>
+        <div class="toolbar-divider"></div>
+        <button class="connection" id="mcp-status" title="MCP 连接设置"><span class="connection-dot"></span><span>MCP</span></button>
+        <div class="dropdown">
+          <button class="button primary" id="save-menu-button" aria-expanded="false" aria-controls="save-menu" title="另存为 (Ctrl+Shift+S)" aria-keyshortcuts="Control+Shift+s"><i data-icon="download"></i><span>另存为</span><i data-icon="chevron-down" class="chevron"></i></button>
+          <div class="menu" id="save-menu" hidden>
+            <button data-format="nbt"><i data-icon="file-box"></i><span>原版结构 <small>.nbt</small></span></button>
+            <button data-format="litematic"><i data-icon="layers"></i><span>投影文件 <small>.litematic</small></span></button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace" aria-label="建筑编辑器">
+      <aside class="library" aria-label="方块库">
+        <div class="library-top">
+          <div class="panel-heading"><h1><i data-icon="boxes"></i>方块库</h1><span class="count" id="palette-count">0</span></div>
+          <label class="search"><i data-icon="search"></i><input type="search" id="palette-search" placeholder="搜索方块或 ID" aria-label="搜索方块或 ID" /><kbd>/</kbd></label>
+          <label class="palette-select" title="按方块 ID 中冒号前的命名空间筛选"><span><i data-icon="package"></i>Mod ID</span><select id="block-mod-id" disabled><option value="">全部模组</option></select></label>
+          <label class="palette-select" title="优先显示所选语言，缺失的译名使用英文"><span><i data-icon="languages"></i>方块语言</span><select id="block-language"></select></label>
+          <div class="filters" id="palette-filters" aria-label="方块类别">
+            <button data-category="all" aria-pressed="true">全部</button><button data-category="stone" aria-pressed="false">石材</button><button data-category="wood" aria-pressed="false">木材</button><button data-category="nature" aria-pressed="false">自然</button><button data-category="decor" aria-pressed="false">装饰</button>
+          </div>
+        </div>
+        <div class="palette-scroll" id="palette-scroll"><div id="palette" class="palette"></div></div>
+        <div class="pack-progress" data-pack-progress hidden></div>
+        <div class="pack-footer">
+          <div class="pack-emblem"><i data-icon="package"></i></div>
+          <div class="pack-caption"><strong>资源包</strong><span id="pack-summary">尚未加载资源包</span></div>
+          <button class="button subtle" id="pack-manager"><i data-icon="plus"></i>导入</button>
+        </div>
+      </aside>
+
+      <section class="editor" aria-label="三维视图">
+        <div class="viewbar">
+          <div class="view-title"><i data-icon="cuboid"></i>三维视图</div>
+          <div class="view-actions">
+            <button class="icon-button" id="undo" title="撤销 (Ctrl+Z)" aria-label="撤销" aria-keyshortcuts="Control+z" disabled><i data-icon="undo-2"></i></button>
+            <button class="icon-button" id="redo" title="重做 (Ctrl+Y 或 Ctrl+Shift+Z)" aria-label="重做" aria-keyshortcuts="Control+y Control+Shift+z" disabled><i data-icon="redo-2"></i></button>
+            <span class="toolbar-divider"></span>
+            <button class="icon-button" id="grid-toggle" title="显示网格" aria-label="显示网格" aria-pressed="true"><i data-icon="grid-3x3"></i></button>
+            <button class="icon-button" id="frame" title="聚焦建筑 (F)" aria-label="聚焦建筑"><i data-icon="scan"></i></button>
+            <button class="icon-button" id="screenshot" title="保存视图截图" aria-label="保存视图截图"><i data-icon="camera"></i></button>
+          </div>
+        </div>
+        <div class="viewport" id="viewport">
+          <div id="view-error" class="view-error" hidden></div>
+          <div class="tools" id="tools" aria-label="编辑工具">
+            <button data-tool="select" class="icon-button" title="选取 (V) · Shift 多选" aria-label="选取" aria-pressed="true"><i data-icon="mouse-pointer-2"></i></button>
+            <button data-tool="place" class="icon-button" title="放置 (P)" aria-label="放置" aria-pressed="false" disabled><i data-icon="plus"></i></button>
+            <button data-tool="erase" class="icon-button" title="擦除 (E)" aria-label="擦除" aria-pressed="false"><i data-icon="eraser"></i></button>
+            <span class="tool-divider"></span>
+            <button data-tool="box" class="icon-button" title="区域选取 (B)" aria-label="区域选取" aria-pressed="false"><i data-icon="scan-line"></i></button>
+            <button data-tool="fill" class="icon-button" title="区域填充 (G)" aria-label="区域填充" aria-pressed="false" disabled><i data-icon="paint-bucket"></i></button>
+            <button data-tool="pick" class="icon-button" title="吸取方块 (I)" aria-label="吸取方块" aria-pressed="false"><i data-icon="pipette"></i></button>
+          </div>
+          <div class="view-widget">
+            <canvas id="compass" width="90" height="90" aria-label="坐标轴"></canvas>
+            <div class="view-presets" aria-label="相机视角">
+              <button data-preset="isometric" aria-pressed="true" title="透视">透视</button>
+              <button data-preset="front" aria-pressed="false" title="南侧正视">正视</button>
+              <button data-preset="right" aria-pressed="false" title="东侧侧视">侧视</button>
+              <button data-preset="top" aria-pressed="false" title="俯视">俯视</button>
+            </div>
+          </div>
+          <div class="canvas-hints" id="canvas-hints"><span><i data-icon="mouse"></i>中键旋转</span><span>右键平移</span><span>滚轮缩放</span></div>
+          <button class="icon-button help-button" id="help" aria-label="操作快捷键" title="操作快捷键"><i data-icon="circle-help"></i></button>
+        </div>
+      </section>
+
+      <aside class="inspector" aria-label="检查器">
+        <div class="panel-heading inspector-title"><h2><i data-icon="sliders-horizontal"></i>检查器</h2></div>
+        <div class="inspector-scroll">
+          <section class="inspector-section brush-section">
+            <h3><i data-icon="box"></i>画笔方块</h3>
+            <p id="brush-empty" class="brush-properties property-empty">未选择方块</p>
+            <div class="brush-card" id="brush-card" hidden>
+              <span class="brush-thumbnail"><canvas id="brush-icon" width="64" height="64"></canvas></span>
+              <div><strong id="brush-name"></strong><code id="brush-id"></code></div>
+            </div>
+            <div class="brush-properties" id="brush-properties" hidden></div>
+          </section>
+          <section class="inspector-section selection-section">
+            <div class="section-heading"><h3><i data-icon="scan-line"></i>选区变换</h3><span class="small-count" id="selection-count">0</span></div>
+            <div id="selection-empty" class="selection-empty">
+              <i data-icon="box-select"></i><strong>当前没有选区</strong><span>用选取工具在视图中选择方块</span>
+              <button class="button subtle" id="select-all">选择全部</button>
+            </div>
+            <form id="transform" class="transform" hidden>
+              <fieldset><legend>原点</legend><div class="axis-inputs" id="transform-origin"></div></fieldset>
+              <fieldset><legend>尺寸</legend><div class="axis-inputs" id="transform-size"></div></fieldset>
+              <button type="submit" class="button subtle full"><i data-icon="move-3d"></i>应用移动和缩放</button>
+              <div class="transform-row"><button type="button" class="button subtle" data-rotation="-90" title="逆时针转 90°"><i data-icon="rotate-ccw"></i>−90°</button><button type="button" class="button subtle" data-rotation="90" title="顺时针转 90°"><i data-icon="rotate-cw"></i>90°</button></div>
+              <div class="transform-row"><button type="button" class="button subtle" id="paint-selection" disabled><i data-icon="paint-bucket"></i>替换方块</button><button type="button" class="button subtle danger" id="delete-selection" title="删除选区 (Delete)"><i data-icon="trash-2"></i>删除</button></div>
+            </form>
+          </section>
+          <section class="inspector-section scene-section">
+            <div class="section-heading"><h3><i data-icon="layers"></i>场景</h3><button class="icon-button small" id="scene-settings" title="项目设置" aria-label="项目设置"><i data-icon="settings-2"></i></button></div>
+            <dl class="scene-stats">
+              <div><dt>方块总数</dt><dd id="scene-count">0</dd></div>
+              <div><dt>包围盒尺寸</dt><dd id="scene-bounds">—</dd></div>
+              <div><dt>DataVersion</dt><dd id="data-version">3955</dd></div>
+            </dl>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <div class="status-message"><span class="status-dot"></span><span id="status-message" role="status">就绪</span></div>
+      <div class="status-data"><span id="cursor-position" class="coordinates">X — &nbsp; Y — &nbsp; Z —</span><label class="work-layer"><i data-icon="layers"></i>工作层 <input id="work-layer" type="number" min="-1000000" max="1000000" value="0" aria-label="工作层 Y 坐标" /></label><span class="edition">Minecraft Java</span></div>
+    </footer>
+
+    <dialog id="pack-dialog" class="dialog">
+      <div class="dialog-header"><div><h2>全局资源包</h2><p>从下往上加载，上层资源包覆盖下层的同名资源。</p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+      <div class="pack-progress" data-pack-progress hidden></div>
+      <div id="pack-list" class="pack-list"></div>
+      <div class="dialog-error" id="pack-error" role="alert" hidden></div>
+      <div class="dialog-actions">
+        <button class="button quiet" data-pack-type="folder"><i data-icon="folder-open"></i>导入文件夹</button>
+        <button class="button primary" data-pack-type="archive"><i data-icon="package-plus"></i>导入 ZIP / JAR</button>
+      </div>
+    </dialog>
+
+    <template id="pack-progress-template">
+      <div class="pack-progress-label"><span>资源包总进度</span><span data-progress-count></span></div>
+      <progress data-progress-total aria-label="资源包总进度"></progress>
+      <div class="pack-progress-label"><span data-progress-name>当前资源包</span><span data-progress-stage></span></div>
+      <progress data-progress-pack aria-label="当前资源包进度"></progress>
+    </template>
+
+    <dialog id="project-dialog" class="dialog compact">
+      <form id="project-form">
+        <div class="dialog-header"><h2>项目设置</h2><button class="icon-button" type="button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+        <div class="dialog-fields"><label>项目名称<input id="edit-name" maxlength="120" required /></label><label>Minecraft DataVersion<input id="edit-data-version" type="number" min="1" max="2147483647" required /></label></div>
+        <div class="dialog-actions"><button class="button quiet" type="button" data-close>取消</button><button class="button primary" type="submit">应用</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="unsaved-dialog" class="dialog compact" role="alertdialog" aria-labelledby="unsaved-title" aria-describedby="unsaved-message">
+      <form method="dialog">
+        <div class="dialog-header">
+          <div><h2 id="unsaved-title">有未保存的修改</h2><p id="unsaved-message"></p></div>
+        </div>
+        <div class="dialog-fields" id="unsaved-format-field" hidden>
+          <label>保存格式<select id="unsaved-format"><option value="litematic">Litematica 投影 (.litematic)</option><option value="nbt">Minecraft 原版结构 (.nbt)</option></select></label>
+        </div>
+        <div class="dialog-actions">
+          <button class="button quiet" type="submit" value="cancel" autofocus>取消</button>
+          <button class="button subtle danger" type="submit" value="discard">不保存</button>
+          <button class="button primary" type="submit" value="save">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="mcp-dialog" class="dialog compact">
+      <div class="dialog-header"><div><h2>MCP 连接</h2><p id="mcp-dialog-status"></p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+      <div class="dialog-fields"><label>Streamable HTTP 地址<input id="mcp-address" readonly /></label></div>
+      <div class="dialog-actions"><button class="button primary" id="copy-mcp"><i data-icon="copy"></i>复制地址</button></div>
+    </dialog>
+
+    <dialog id="drop-structure-dialog" class="dialog compact" aria-labelledby="drop-structure-title">
+      <form method="dialog">
+        <div class="dialog-header"><h2 id="drop-structure-title">选择要打开的建筑</h2></div>
+        <div class="dialog-fields"><label>结构文件<select id="drop-structure-file"></select></label></div>
+        <div class="dialog-actions">
+          <button class="button quiet" type="submit" value="cancel" autofocus>取消</button>
+          <button class="button primary" type="submit" value="open">打开</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="help-dialog" class="dialog compact">
+      <div class="dialog-header"><h2>操作快捷键</h2><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+      <dl class="shortcuts">
+        <div><dt>选取 / 多选</dt><dd><kbd>V</kbd><kbd>Shift</kbd> + 点击</dd></div>
+        <div><dt>放置 / 擦除 / 吸取</dt><dd><kbd>P</kbd><kbd>E</kbd><kbd>I</kbd></dd></div>
+        <div><dt>区域选取 / 填充</dt><dd><kbd>B</kbd><kbd>G</kbd></dd></div>
+        <div><dt>全选 / 删除选区</dt><dd><kbd>Ctrl+A</kbd><kbd>Del</kbd></dd></div>
+        <div><dt>聚焦 / 搜索</dt><dd><kbd>F</kbd><kbd>/</kbd></dd></div>
+        <div><dt>撤销</dt><dd><kbd>Ctrl+Z</kbd></dd></div>
+        <div><dt>重做</dt><dd><kbd>Ctrl+Y</kbd><kbd>Ctrl+Shift+Z</kbd></dd></div>
+        <div><dt>新建 / 打开</dt><dd><kbd>Ctrl+N</kbd><kbd>Ctrl+O</kbd></dd></div>
+        <div><dt>保存 / 另存为</dt><dd><kbd>Ctrl+S</kbd><kbd>Ctrl+Shift+S</kbd></dd></div>
+      </dl>
+    </dialog>
+    <div id="file-drop-hint" class="file-drop-hint" popover="manual" aria-hidden="true">
+      <div><strong>松开鼠标以处理文件</strong><span id="file-drop-formats"></span></div>
+    </div>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </body>
+</html>
