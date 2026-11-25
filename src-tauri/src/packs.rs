@@ -14,7 +14,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 const MAX_ARCHIVE_BYTES: u64 = 384 * 1024 * 1024;
 const MAX_FOLDER_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_FOLDER_ENTRIES: usize = 150_000;
-const FOLDER_VIEW_NAME: &str = "view-v3.zip";
+const FOLDER_VIEW_NAME: &str = "view-v4.zip";
 const ORDER_FILE_NAME: &str = "order.json";
 
 #[derive(Clone)]
@@ -282,20 +282,24 @@ fn copy_folder(
 }
 
 fn supported(path: &str) -> bool {
-    let Some((_, asset)) = path
-        .split_once("/assets/")
-        .or_else(|| path.strip_prefix("assets/").map(|asset| ("", asset)))
-    else {
+    let section = |name: &str| {
+        path.strip_prefix(name.trim_start_matches('/'))
+            .or_else(|| path.split_once(name).map(|(_, rest)| rest))
+    };
+    if let Some(data) = section("/data/")
+        && let Some((namespace, pattern)) = data.split_once("/banner_pattern/")
+        && valid_namespace(namespace)
+        && pattern.ends_with(".json")
+    {
+        return true;
+    }
+    let Some(asset) = section("/assets/") else {
         return false;
     };
     let Some((namespace, relative)) = asset.split_once('/') else {
         return false;
     };
-    if namespace.is_empty()
-        || !namespace
-            .bytes()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || b"_.-".contains(&ch))
-    {
+    if !valid_namespace(namespace) {
         return false;
     }
     let Some((kind, name)) = relative.split_once('/') else {
@@ -310,6 +314,13 @@ fn supported(path: &str) -> bool {
         }),
         _ => false,
     }
+}
+
+fn valid_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace
+            .bytes()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || b"_.-".contains(&ch))
 }
 
 fn validate_archive(path: &Path) -> Result<(), String> {
@@ -347,6 +358,7 @@ fn folder_view(path: &Path) -> Result<PathBuf, String> {
         staging.persist(&view).map_err(message)?;
         let _ = fs::remove_file(path.join("view.zip"));
         let _ = fs::remove_file(path.join("view-v2.zip"));
+        let _ = fs::remove_file(path.join("view-v3.zip"));
     }
     Ok(view)
 }
@@ -354,6 +366,10 @@ fn folder_view(path: &Path) -> Result<PathBuf, String> {
 fn folder_archive<W: io::Write + io::Seek>(folder: &Path, output: W) -> Result<W, String> {
     let mut zip = ZipWriter::new(output);
     let mut pending = vec![folder.join("assets")];
+    let data = folder.join("data");
+    if data.is_dir() && !is_link(&data).map_err(message)? {
+        pending.push(data);
+    }
     let mut size = 0_u64;
     let mut found = false;
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);

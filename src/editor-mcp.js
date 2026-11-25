@@ -1,5 +1,6 @@
 import { saveStructureFile } from './desktop.js';
 import { boundsOf, boxBetween, inBox, point } from './scene.js';
+import { blockEntityOf } from './block-entities.js';
 
 function page(items, offset = 0, limit = 50, maximum = 1000) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > maximum) throw new Error(`offset must be non-negative and limit must be 1–${maximum}.`);
@@ -32,7 +33,8 @@ export function editorMcp(scene, editor) {
     },
     set_blocks: ({ blocks }) => {
       if (!Array.isArray(blocks) || blocks.length > 20_000) throw new Error('Provide a blocks array with up to 20,000 entries.');
-      const changes = scene.setBlocks(blocks.map(({ pos, state }) => ({ pos, state: state === null ? null : editor.catalog().state(state) })));
+      const catalog = editor.catalog();
+      const changes = scene.setBlocks(blocks.map(block => ({ ...block, state: block.state === null ? null : catalog.state(block.state) })));
       return { changes, blockCount: scene.blocks.size };
     },
     fill_box: ({ from, to, state, hollow = false }) => {
@@ -70,7 +72,12 @@ export function editorMcp(scene, editor) {
       if (!Array.isArray(states) || states.length < 1 || states.length > 32) throw new Error('Provide a states array with 1–32 entries.');
       if (typeof follow_camera !== 'boolean') throw new Error('follow_camera must be a boolean.');
       const catalog = editor.catalog();
-      return editor.renderBlockStates(states.map(state => catalog.state(state)), follow_camera);
+      const entries = states.map(input => {
+        const entry = input && typeof input === 'object' && Object.hasOwn(input, 'state') ? input : { state: input };
+        const state = catalog.state(entry.state);
+        return { state, blockEntity: blockEntityOf(state, entry.blockEntity) };
+      });
+      return editor.renderBlockStates(entries, follow_camera);
     },
     export_structure: ({ format }) => {
       if (!scene.blocks.size) throw new Error('Place blocks in the scene before exporting.');

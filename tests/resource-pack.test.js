@@ -113,6 +113,27 @@ test('palette filtering uses exact namespaces and combines with category and lan
   assert.deepEqual(catalog.find('', 'all', 'sam'), []);
 });
 
+test('selection properties use common values and include states stored only in the project', async () => {
+  const model = { model: 'example:block/sample' };
+  const pack = await loadArchive(archive({
+    'assets/example/blockstates/panel.json': { variants: { 'facing=north,lit=false': model, 'facing=east,lit=true': model } },
+    'assets/example/blockstates/gate.json': { variants: { 'facing=north': model, 'facing=south': model } },
+  }));
+  const catalog = new BlockCatalog([pack]);
+  const panel = { state: { name: 'example:panel', properties: { tint: 'light' } } };
+  const gate = { state: { name: 'example:gate', properties: { facing: 'south', tint: 'dark' } } };
+  assert.deepEqual(catalog.selectionProperties([panel]), [
+    { key: 'facing', value: 'north', options: ['north', 'east'] },
+    { key: 'lit', value: 'false', options: ['false', 'true'] },
+    { key: 'tint', value: 'light', options: undefined },
+  ]);
+  assert.deepEqual(catalog.selectionProperties([panel, gate]), [
+    { key: 'facing', value: undefined, options: ['north'] },
+    { key: 'tint', value: undefined, options: undefined },
+  ]);
+  assert.deepEqual(catalog.selectionProperties([panel, { state: { name: 'example:unknown' } }]), []);
+});
+
 test('archive progress counts supported files including deferred language entries', async () => {
   const steps = [];
   const pack = await loadArchive(archive({

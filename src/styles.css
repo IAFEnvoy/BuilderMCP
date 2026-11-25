@@ -168,6 +168,22 @@ kbd {
 .palette-message, .palette-more { grid-column: 1 / -1; }
 .palette-message { align-self: center; padding: 18px 0; text-align: center; color: var(--muted); }
 .palette-more { margin-top: 4px; }
+.brush-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: min(216px, calc(100vw - 16px));
+  max-height: min(320px, calc(100vh - 16px));
+  overflow: auto;
+  padding: 8px 10px 10px;
+  border: 1px solid #4c5767;
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel-raised);
+  box-shadow: 0 6px 20px #0006;
+}
+.brush-popover h2 { font-size: 12px; }
+.brush-popover .brush-properties { margin-top: 5px; }
 .pack-progress { flex: none; display: grid; gap: 5px; padding: 10px 13px; border-top: 1px solid var(--line); background: #20252d; }
 .pack-progress-label { display: flex; align-items: baseline; justify-content: space-between; gap: 7px; color: var(--muted); font-size: 11px; }
 .pack-progress-label span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -228,16 +244,17 @@ kbd {
 .inspector-section { padding: 15px; border-bottom: 1px solid var(--line-soft); }
 .inspector-section h3 { font-size: 12px; color: #d6dee7; }
 .inspector-section h3 svg { width: 14px; height: 14px; color: #98a8bc; }
-.brush-card { display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 8px; border: 1px solid #3a4350; border-radius: 7px; background: #252c36; }
-.brush-thumbnail { display: grid; place-items: center; flex: none; width: 42px; height: 42px; border-radius: 5px; background: #1e242d; }
-.brush-thumbnail canvas { width: 33px; height: 33px; }
-.brush-card > div { display: grid; gap: 4px; min-width: 0; }
-.brush-card strong { font-size: 13px; overflow-wrap: anywhere; }
-.brush-card code { font-size: 10px; color: #aebacc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brush-properties { display: grid; gap: 6px; margin-top: 10px; }
+.selected-block-card { display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 8px; border: 1px solid #3a4350; border-radius: 7px; background: #252c36; }
+.selected-block-thumbnail { display: grid; place-items: center; flex: none; width: 42px; height: 42px; border-radius: 5px; background: #1e242d; }
+.selected-block-thumbnail canvas { width: 33px; height: 33px; }
+.selected-block-card > div { display: grid; gap: 4px; min-width: 0; }
+.selected-block-card strong { font-size: 13px; overflow-wrap: anywhere; }
+.selected-block-card code { font-size: 10px; color: #aebacc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selected-block-mixed { margin-top: 11px; }
+.brush-properties, .selection-state-fields { display: grid; gap: 6px; margin-top: 10px; }
 .property { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 5px; align-items: center; font: 11px var(--mono); color: #adb9c8; }
 .property span { overflow: hidden; text-overflow: ellipsis; }
-.property select { height: 26px; padding: 0 5px; font: 10px var(--mono); }
+.property :is(input, select) { height: 26px; padding: 0 5px; font: 10px var(--mono); }
 .property-empty { font-size: 11px; color: var(--dim); }
 .section-heading { display: flex; justify-content: space-between; align-items: center; min-height: 19px; }
 .selection-empty { display: flex; flex-direction: column; align-items: center; padding: 15px 6px 12px; margin-top: 11px; border: 1px dashed #414b59; border-radius: 7px; color: var(--muted); gap: 7px; text-align: center; }
@@ -257,6 +274,13 @@ kbd {
 .transform-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .transform .button { height: 28px; gap: 4px; padding: 0 6px; font-size: 11px; }
 .transform .button svg { width: 13px; height: 13px; }
+.block-entity-fields { display: grid; gap: 6px; }
+.block-entity-fields .property { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+.block-entity-fields input { height: 28px; padding: 0 5px; font: 10px var(--mono); }
+.banner-layer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+.banner-layer :is(input, select) { width: 100%; }
+.banner-layer select { grid-column: 1; }
+.banner-layer .icon-button { grid-column: 2; grid-row: 1; }
 .danger { color: #f4aaa1; }
 .scene-section { padding-top: 12px; }
 .scene-stats { display: grid; gap: 8px; margin-top: 7px; }

@@ -62,14 +62,19 @@ async function itemTint(catalog, source) {
   return new THREE.Color(r << 16 | g << 8 | b);
 }
 
-function frameBlock(camera, layers) {
-  const bounds = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1));
-  for (const { batches } of layers) {
+function extendBounds(bounds, layers) {
+  const transformed = new THREE.Box3();
+  for (const { matrix, batches } of layers) {
     for (const { geometry } of batches) {
-      geometry.computeBoundingBox();
-      bounds.union(geometry.boundingBox);
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      bounds.union(transformed.copy(geometry.boundingBox).applyMatrix4(matrix));
     }
   }
+  return bounds;
+}
+
+function frameBlock(camera, layers) {
+  const bounds = extendBounds(new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1)), layers);
   const { center, radius } = bounds.getBoundingSphere(new THREE.Sphere());
   let distance;
   if (camera.isOrthographicCamera) {
@@ -89,6 +94,7 @@ function frameBlock(camera, layers) {
 
 export class ModelPreview {
   cache = new Map();
+  #canvasDraws = new WeakMap();
   queue = Promise.resolve();
   rendered = 0;
 
@@ -103,15 +109,20 @@ export class ModelPreview {
     return pending;
   }
 
-  async draw(catalog, state, canvas, inventory = false) {
-    const key = `${inventory ? 'item' : 'block'}:${stateKey(state)}`;
+  async draw(catalog, state, canvas, inventory = false, entity) {
+    const key = JSON.stringify([inventory, stateKey(state), entity ?? null]);
     const cache = this.cache;
     if (!cache.has(key)) {
-      cache.set(key, this.prepare(catalog, state, inventory).then(layers => this.enqueue(() =>
+      cache.set(key, this.prepare(catalog, state, inventory, entity).then(layers => this.enqueue(() =>
         this.render(layers, this.thumbnailCamera, thumbnailSize, { active: cache === this.cache }))));
     }
-    const snapshot = await cache.get(key);
-    if (snapshot) canvas.getContext('2d').drawImage(snapshot, 0, 0, canvas.width, canvas.height);
+    const pending = cache.get(key);
+    this.#canvasDraws.set(canvas, pending);
+    const snapshot = await pending;
+    if (!snapshot || cache !== this.cache || this.#canvasDraws.get(canvas) !== pending) return;
+    const context = canvas.getContext('2d');
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(snapshot, 0, 0, canvas.width, canvas.height);
   }
 
   setCatalog() {
@@ -122,12 +133,14 @@ export class ModelPreview {
     const rendered = new Map();
     const images = [];
     const tick = catalog.animationTick();
-    for (const state of states) {
-      const key = stateKey(state);
+    const billboard = new THREE.Matrix4().makeRotationFromQuaternion(camera.quaternion)
+      .setPosition(0.5, 0.5, 0.5).multiply(blockCenter);
+    for (const { state, blockEntity } of states) {
+      const key = JSON.stringify([stateKey(state), blockEntity ?? null]);
       if (!rendered.has(key)) {
         const tint = tintFor(state.name);
-        const parts = catalog.parts(state, [0, 0, 0]);
-        const layers = await Promise.all(parts.map(part => this.prepareLayer(catalog, part, identity, tint)));
+        const parts = catalog.parts(state, [0, 0, 0], blockEntity);
+        const layers = await Promise.all(parts.map(part => this.prepareLayer(catalog, part, part.marker ? billboard : identity, tint)));
         frameBlock(camera, layers);
         const image = await this.enqueue(() => this.render(layers, camera, blockImageSize, { tick }));
         rendered.set(key, image.toDataURL('image/png').split(',')[1]);
@@ -137,15 +150,25 @@ export class ModelPreview {
     return images;
   }
 
-  async prepare(catalog, state, inventory) {
+  async prepare(catalog, state, inventory, entity) {
     const item = inventory ? catalog.itemParts(state) : [];
-    const parts = item.length ? item : catalog.parts(state, [0, 0, 0]);
+    const parts = item.length ? item : catalog.parts(state, [0, 0, 0], entity);
     const tint = tintFor(state.name);
     return Promise.all(parts.map(async part => {
       const tints = item.length && Array.isArray(part.tints) ? await Promise.all(part.tints.map(source => itemTint(catalog, source))) : tint;
       const transform = part.transforms?.reduce((combined, step) => combined.multiply(itemTransform(step)), identity.clone()) ?? identity;
-      const matrix = guiTransform(item.length ? part.model.gui ?? (part.model.generated ? {} : defaultGui) : defaultGui).multiply(transform);
-      return this.prepareLayer(catalog, part, matrix, tints, Boolean(item.length && part.model.guiLight === 'front'));
+      const gui = part.marker ? {} : item.length ? part.model.gui ?? (part.model.generated ? {} : defaultGui) : defaultGui;
+      const matrix = guiTransform(gui).multiply(transform);
+      const layer = await this.prepareLayer(catalog, part, matrix, tints, Boolean(item.length && part.model.guiLight === 'front'));
+      if (part.fitThumbnail && layer.batches.length) {
+        const bounds = extendBounds(new THREE.Box3(), [layer]);
+        const center = bounds.getCenter(new THREE.Vector3());
+        const size = bounds.getSize(new THREE.Vector3());
+        const scale = Math.min(1, 1 / Math.max(size.x, size.y));
+        matrix.premultiply(new THREE.Matrix4().makeScale(scale, scale, scale)
+          .setPosition(center.multiplyScalar(-scale)));
+      }
+      return layer;
     }));
   }
 

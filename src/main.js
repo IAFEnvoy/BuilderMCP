@@ -7,6 +7,7 @@ import {
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import Sortable from 'sortablejs';
 import './styles.css';
+import { blockEntityKind, defaultJigsaw, DYE_COLORS, MAX_BANNER_LAYERS } from './block-entities.js';
 import {
   connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, openProject, PACK_ARCHIVE_FORMATS,
   packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
@@ -20,6 +21,10 @@ import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint 
 import { DEFAULT_CAMERA_PRESET, drawCompass, Viewport } from './viewport.js';
 
 const byId = id => document.getElementById(id);
+const palette = byId('palette');
+const paletteScroll = byId('palette-scroll');
+const brushPopover = byId('brush-popover');
+const brushFields = byId('brush-properties');
 const modIdFilter = byId('block-mod-id');
 const unsavedDialog = byId('unsaved-dialog');
 const packList = byId('pack-list');
@@ -66,6 +71,8 @@ let officialLocales = [];
 let officialLanguages = new Map();
 const languageRequests = new Set();
 let brush = null;
+let brushEntity;
+let brushPopoverTile;
 let tool = 'select';
 let category = 'all';
 let firstCorner = null;
@@ -73,6 +80,7 @@ let currentPreset = DEFAULT_CAMERA_PRESET;
 let currentFile = null;
 let savedRevision = build.revision;
 let paletteLimit = PALETTE_PAGE_SIZE;
+let paletteCatalog;
 let packs = new Map();
 let packBusy = false;
 let packQueue = Promise.resolve();
@@ -144,12 +152,71 @@ function toggleTool(next) {
   viewport?.invalidate();
 }
 
-function chooseBrush(state, switchTool = false) {
+function chooseBrush(state, switchTool = false, entity) {
+  brushPopover.hidePopover();
+  const previous = brush?.name;
   brush = state ? catalog.state(state) : null;
+  brushEntity = brush ? entity : undefined;
   if (!brush && brushTools.has(tool)) toggleTool('select');
   if (brush && switchTool && !brushTools.has(tool)) toggleTool('place');
-  renderBrush();
-  for (const button of byId('palette').querySelectorAll('[data-block]')) button.setAttribute('aria-pressed', String(button.dataset.block === brush?.name));
+  for (const button of toolButtons) {
+    if (brushTools.has(button.dataset.tool)) button.disabled = !brush;
+  }
+  for (const tile of palette.querySelectorAll('[data-block]')) {
+    const name = tile.dataset.block;
+    if (name !== previous && name !== brush?.name) continue;
+    const block = catalog.blocks.get(name);
+    if (block) renderPaletteTile(tile, block);
+  }
+}
+
+function blockThumbnail(state, inventory, entity) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  canvas.setAttribute('aria-hidden', 'true');
+  modelPreview.draw(catalog, state, canvas, inventory, entity).catch(() => {});
+  return canvas;
+}
+
+function brushPropertyOptions(block, state) {
+  return Object.entries(block.properties).filter(([key, values]) => {
+    const current = state.properties?.[key] ?? values[0];
+    return values.some(value => value !== current);
+  });
+}
+
+function updatePaletteTileLabel(tile, block) {
+  const label = tile.lastElementChild;
+  if (label.textContent !== block.label) label.textContent = block.label;
+  tile.title = `${block.label}\n${block.name}${tile.hasAttribute('aria-haspopup') ? '\n点击设置画笔属性' : ''}`;
+}
+
+function renderPaletteTile(tile, block) {
+  const active = block.name === brush?.name;
+  const state = active ? brush : block.state;
+  const entity = active ? brushEntity : undefined;
+  tile.setAttribute('aria-pressed', String(active));
+  if (brushPropertyOptions(block, state).length) {
+    tile.setAttribute('aria-haspopup', 'dialog');
+    tile.setAttribute('aria-controls', brushPopover.id);
+    tile.setAttribute('aria-expanded', String(brushPopoverTile === tile));
+  } else {
+    for (const attribute of ['aria-haspopup', 'aria-controls', 'aria-expanded']) tile.removeAttribute(attribute);
+  }
+  updatePaletteTileLabel(tile, block);
+  const canvas = tile.querySelector('canvas');
+  if (!canvas) {
+    tile.prepend(blockThumbnail(state, !active, entity));
+    return;
+  }
+
+  // Keep the existing image visible while preparing a new state off the click handler.
+  const source = catalog;
+  setTimeout(() => {
+    const current = brush?.name === block.name ? brush : block.state;
+    if (!tile.isConnected || source !== catalog || current !== state) return;
+    modelPreview.draw(source, state, canvas, !active, entity).catch(() => {});
+  }, 0);
 }
 
 function resetPalette() {
@@ -158,99 +225,111 @@ function resetPalette() {
 }
 
 function renderPalette(resetScroll = true) {
-  const root = byId('palette');
+  if (paletteCatalog !== catalog) {
+    brushPopover.hidePopover();
+    palette.replaceChildren();
+    paletteCatalog = catalog;
+  }
   const matches = catalog.find(byId('palette-search').value, category, modIdFilter.value);
+  const visible = matches.slice(0, paletteLimit);
   byId('palette-count').textContent = matches.length.toLocaleString();
-  if (resetScroll) byId('palette-scroll').scrollTop = 0;
-  root.replaceChildren();
+  if (resetScroll) paletteScroll.scrollTop = 0;
+  const visibleNames = new Set(visible.map(block => block.name));
+  const tiles = new Map();
+  for (const tile of palette.querySelectorAll('[data-block]')) {
+    if (visibleNames.has(tile.dataset.block)) tiles.set(tile.dataset.block, tile);
+    else {
+      if (tile === brushPopoverTile) brushPopover.hidePopover();
+      tile.remove();
+    }
+  }
+
+  const more = palette.querySelector('.palette-more');
+  palette.querySelector('.palette-message')?.remove();
   if (!matches.length) {
+    more?.remove();
     const empty = document.createElement('p');
     empty.className = 'palette-message';
     empty.textContent = catalog.blocks.size ? '没有匹配的方块' : '导入资源包以加载方块';
-    root.append(empty);
+    palette.append(empty);
     return;
   }
 
-  const tiles = document.createDocumentFragment();
-  const source = catalog;
-  for (const block of matches.slice(0, paletteLimit)) {
-    const tile = document.createElement('button');
-    tile.className = 'tile';
-    tile.dataset.block = block.name;
-    tile.title = `${block.label}\n${block.name}`;
-    tile.setAttribute('aria-pressed', String(block.name === brush?.name));
-    const thumbnail = document.createElement('canvas');
-    thumbnail.width = thumbnail.height = 64;
-    const label = document.createElement('span');
-    label.textContent = block.label;
-    tile.append(thumbnail, label);
-    tiles.append(tile);
-    modelPreview.draw(source, block.state, thumbnail, true).catch(() => {});
+  let next = palette.firstElementChild;
+  for (const block of visible) {
+    let tile = tiles.get(block.name);
+    if (tile) updatePaletteTileLabel(tile, block);
+    else {
+      tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'tile';
+      tile.dataset.block = block.name;
+      tile.append(document.createElement('span'));
+      renderPaletteTile(tile, block);
+    }
+    if (tile !== next) palette.insertBefore(tile, next);
+    next = tile.nextElementSibling;
   }
-  if (paletteLimit < matches.length) {
-    const more = document.createElement('button');
-    more.className = 'button subtle palette-more';
-    more.textContent = '显示更多';
-    more.addEventListener('click', () => { paletteLimit += PALETTE_PAGE_SIZE; renderPalette(false); });
-    tiles.append(more);
+  if (visible.length === matches.length) more?.remove();
+  else if (!more) {
+    const button = document.createElement('button');
+    button.className = 'button subtle palette-more';
+    button.textContent = '显示更多';
+    button.addEventListener('click', () => { paletteLimit += PALETTE_PAGE_SIZE; renderPalette(false); });
+    palette.append(button);
   }
-  root.append(tiles);
+  positionBrushPopover();
 }
 
-function renderBrush() {
-  byId('brush-empty').hidden = Boolean(brush);
-  byId('brush-card').hidden = !brush;
-  updateBrushName();
-  byId('brush-id').textContent = brush?.name ?? '';
-  byId('brush-id').title = brush?.name ?? '';
-  renderBrushThumbnail();
-  for (const button of toolButtons) {
-    if (brushTools.has(button.dataset.tool)) button.disabled = !brush;
-  }
-  const root = byId('brush-properties');
-  root.hidden = !brush;
-  root.replaceChildren();
-  if (!brush) return;
+function showBrushPopover(tile, block, focusField) {
+  const properties = brushPropertyOptions(block, brush);
+  if (!properties.length) return;
 
-  const block = catalog.blocks.get(brush.name);
-  const keys = new Set([...Object.keys(block?.properties ?? {}), ...Object.keys(brush.properties ?? {})]);
-  for (const key of keys) {
-    const values = new Set(block?.properties[key] ?? []);
-    const current = brush.properties?.[key];
-    if (current !== undefined) values.add(current);
-    const label = document.createElement('label');
-    label.className = 'property';
-    const name = document.createElement('span');
-    name.textContent = key;
-    name.title = key;
+  brushFields.replaceChildren();
+  for (const [key, options] of properties) {
+    const current = brush.properties?.[key] ?? options[0];
+    const values = new Set(options);
+    values.add(current);
     const select = document.createElement('select');
     for (const value of values) select.add(new Option(value, value));
-    select.value = current ?? select.options[0]?.value;
+    select.value = current;
     select.addEventListener('change', () => {
       brush = catalog.state({ name: brush.name, properties: { ...brush.properties, [key]: select.value } });
-      renderBrushThumbnail();
+      renderPaletteTile(tile, block);
     });
-    label.append(name, select);
-    root.append(label);
+    brushFields.append(statePropertyRow(key, select));
   }
-  if (!keys.size) {
-    const message = document.createElement('span');
-    message.className = 'property-empty';
-    message.textContent = '无可调方块状态';
-    root.append(message);
-  }
+
+  brushPopoverTile = tile;
+  brushPopover.showPopover({ source: tile });
+  tile.setAttribute('aria-expanded', 'true');
+  positionBrushPopover();
+  if (focusField) brushFields.querySelector('select').focus({ preventScroll: true });
 }
 
-function updateBrushName() {
-  byId('brush-name').textContent = brush ? catalog.label(brush.name) : '';
+function positionBrushPopover() {
+  if (!brushPopoverTile) return;
+  const rect = brushPopoverTile.getBoundingClientRect();
+  const clip = paletteScroll.getBoundingClientRect();
+  if (rect.bottom <= clip.top || rect.top >= clip.bottom) {
+    brushPopover.hidePopover();
+    return;
+  }
+  const gap = 8;
+  const width = brushPopover.offsetWidth;
+  const left = rect.right + width + 2 * gap <= window.innerWidth ? rect.right + gap : rect.left - width - gap;
+  brushPopover.style.left = `${Math.max(gap, left)}px`;
+  brushPopover.style.top = `${Math.max(gap, Math.min(rect.top, window.innerHeight - brushPopover.offsetHeight - gap))}px`;
 }
 
-function renderBrushThumbnail() {
-  const thumbnail = document.createElement('canvas');
-  thumbnail.id = 'brush-icon';
-  thumbnail.width = thumbnail.height = 64;
-  byId('brush-icon').replaceWith(thumbnail);
-  if (brush) modelPreview.draw(catalog, brush, thumbnail).catch(() => {});
+function statePropertyRow(key, field) {
+  const label = document.createElement('label');
+  label.className = 'property';
+  const caption = document.createElement('span');
+  caption.textContent = caption.title = key;
+  field.name = key;
+  label.append(caption, field);
+  return label;
 }
 
 function axisInputs(id, min) {
@@ -274,6 +353,206 @@ function axisInputs(id, min) {
 const originFields = axisInputs('transform-origin', -MAX_COORDINATE);
 const sizeFields = axisInputs('transform-size', 1);
 let selectionBounds;
+let inspectedBlock;
+let inspectedSelection = [];
+
+const selectionStatePanel = byId('selection-state');
+const selectionStateFields = byId('selection-state-fields');
+
+function renderSelectedBlock(selected) {
+  const first = selected[0];
+  const name = first?.state.name;
+  const sameType = Boolean(name) && selected.every(({ state }) => state.name === name);
+  byId('selected-block-card').hidden = !sameType;
+  byId('selected-block-mixed').hidden = !first || sameType;
+  if (!sameType) return;
+
+  byId('selected-block-name').textContent = catalog.label(name);
+  byId('selected-block-id').textContent = byId('selected-block-id').title = name;
+  const multiple = selected.length > 1;
+  const state = multiple ? catalog.blocks.get(name)?.state ?? first.state : first.state;
+  byId('selected-block-thumbnail').replaceChildren(blockThumbnail(state, multiple, multiple ? undefined : first.blockEntity));
+}
+
+function renderSelectionState(selected, force = false) {
+  if (!force && selected.length === inspectedSelection.length && selected.every((block, i) => block === inspectedSelection[i])) return;
+  inspectedSelection = selected;
+  selectionStatePanel.hidden = !selected.length;
+  renderSelectedBlock(selected);
+  const properties = catalog.selectionProperties(selected);
+  const fields = selectionStateFields.querySelectorAll('input, select');
+  const reuseFields = properties.length > 0 && properties.length === fields.length &&
+    properties.every(({ key, options }, i) => fields[i].name === key && fields[i].matches(options ? 'select' : 'input'));
+  const rows = properties.map(({ key, value, options }, i) => {
+    const field = reuseFields ? fields[i] : document.createElement(options ? 'select' : 'input');
+    if (options) {
+      const hasCurrent = options.includes(value);
+      const choices = options.map(choice => new Option(choice, choice));
+      if (!hasCurrent) {
+        const current = new Option(value ?? '混合值', '');
+        current.disabled = true;
+        choices.unshift(current);
+      }
+      field.replaceChildren(...choices);
+      field.value = hasCurrent ? value : '';
+      field.disabled = hasCurrent && options.length === 1;
+    } else {
+      field.value = value ?? '';
+      field.placeholder = value === undefined ? '混合值' : '';
+      field.maxLength = 64;
+    }
+    return reuseFields ? field.parentElement : statePropertyRow(key, field);
+  });
+  if (reuseFields) return;
+  if (!rows.length && selected.length) {
+    const empty = document.createElement('p');
+    empty.className = 'property-empty';
+    empty.textContent = selected.length === 1 ? '无可调方块状态' : '选区没有共有的方块状态';
+    rows.push(empty);
+  }
+  selectionStateFields.replaceChildren(...rows);
+}
+
+selectionStateFields.addEventListener('change', ({ target: field }) => {
+  const key = field.name;
+  const value = field.value.trim();
+  if (!value) {
+    renderSelectionState(inspectedSelection, true);
+    return;
+  }
+  try {
+    const updates = [];
+    for (const { pos, state } of inspectedSelection) {
+      const properties = state.properties ?? {};
+      const current = Object.hasOwn(properties, key) ? properties[key] : catalog.stateProperties(state.name)[key]?.[0];
+      if (current !== value) updates.push({ pos, state: { ...state, properties: { ...properties, [key]: value } } });
+    }
+    const changes = build.setBlocks(updates);
+    if (changes) status(`已修改 ${changes.toLocaleString()} 个方块的状态`);
+    else field.value = value;
+  } catch (error) {
+    renderSelectionState(inspectedSelection, true);
+    handleError(error);
+  }
+});
+
+selectionStateFields.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing && event.target.matches('input')) {
+    event.preventDefault();
+    event.target.blur();
+  }
+});
+
+const entityForm = byId('block-entity-form');
+const entityFields = byId('block-entity-fields');
+const addBannerLayer = byId('banner-add-layer');
+const jigsawLabels = {
+  name: '名称', target: '目标名称', pool: '目标池', final_state: '替换为',
+  joint: '连接方式', selection_priority: '选择优先级', placement_priority: '放置优先级',
+};
+
+function bannerLayer({ pattern, color }) {
+  const row = document.createElement('div');
+  row.className = 'banner-layer';
+  const patternId = document.createElement('input');
+  patternId.name = 'pattern';
+  patternId.setAttribute('aria-label', '图案 ID');
+  patternId.setAttribute('list', 'banner-pattern-ids');
+  patternId.maxLength = 256;
+  patternId.required = true;
+  patternId.value = pattern;
+  const dye = document.createElement('select');
+  dye.setAttribute('aria-label', '图案颜色');
+  dye.append(...Object.keys(DYE_COLORS).map(name => {
+    const label = catalog.label('minecraft:' + name + '_dye');
+    return new Option(label.startsWith('block.minecraft.') ? name : label, name);
+  }));
+  dye.value = color;
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'icon-button small danger';
+  remove.setAttribute('aria-label', '移除图案');
+  remove.append(icon('trash-2'));
+  remove.addEventListener('click', () => {
+    row.remove();
+    addBannerLayer.disabled = false;
+  });
+  row.append(patternId, dye, remove);
+  return row;
+}
+
+function renderBlockEntity(block) {
+  if (inspectedBlock === block) return;
+  const previous = inspectedBlock;
+  inspectedBlock = block;
+  const kind = block && blockEntityKind(block.state.name);
+  if (kind && previous?.state.name === block.state.name && samePoint(previous.pos, block.pos) && previous.blockEntity === block.blockEntity) {
+    const joint = entityForm.elements.namedItem('joint');
+    if (joint && !block.blockEntity && joint.value === defaultJigsaw(previous.state).joint) {
+      joint.value = defaultJigsaw(block.state).joint;
+    }
+    return;
+  }
+  byId('block-entity-panel').hidden = !kind;
+  entityFields.replaceChildren();
+  if (!kind) return;
+
+  byId('block-entity-title').textContent = kind === 'banner' ? '旗帜图案' : '拼图方块参数';
+  addBannerLayer.hidden = kind !== 'banner';
+  if (kind === 'banner') {
+    const layers = block.blockEntity?.patterns ?? [];
+    entityFields.append(...layers.map(bannerLayer));
+    addBannerLayer.disabled = layers.length >= MAX_BANNER_LAYERS;
+    return;
+  }
+  const fields = block.blockEntity ?? defaultJigsaw(block.state);
+  for (const [key, value] of Object.entries(fields)) {
+    const label = document.createElement('label');
+    label.className = 'property';
+    const caption = document.createElement('span');
+    caption.textContent = jigsawLabels[key];
+    const field = document.createElement(key === 'joint' ? 'select' : 'input');
+    field.name = key;
+    if (key === 'joint') field.append(new Option('对齐', 'aligned'), new Option('可滚动', 'rollable'));
+    else if (typeof value === 'number') {
+      field.type = 'number';
+      field.min = '-2147483648';
+      field.max = '2147483647';
+      field.step = '1';
+    } else field.maxLength = key === 'final_state' ? 2048 : 256;
+    field.required = true;
+    field.value = value;
+    label.append(caption, field);
+    entityFields.append(label);
+  }
+}
+
+function updateBannerPatterns() {
+  byId('banner-pattern-ids').replaceChildren(...catalog.bannerPatternIds().map(id => new Option(id, id)));
+}
+
+addBannerLayer.addEventListener('click', () => {
+  if (entityFields.children.length >= MAX_BANNER_LAYERS) return;
+  const row = bannerLayer({ pattern: 'minecraft:stripe_top', color: 'white' });
+  entityFields.append(row);
+  addBannerLayer.disabled = entityFields.children.length >= MAX_BANNER_LAYERS;
+  row.querySelector('input').focus();
+});
+
+entityForm.addEventListener('submit', event => {
+  event.preventDefault();
+  const block = inspectedBlock;
+  if (!block) return;
+  try {
+    const entity = blockEntityKind(block.state.name) === 'banner'
+      ? { patterns: [...entityFields.children].map(row => ({
+        pattern: row.querySelector('input').value, color: row.querySelector('select').value,
+      })) }
+      : Object.fromEntries([...entityFields.querySelectorAll('input, select')].map(field =>
+        [field.name, field.type === 'number' ? field.valueAsNumber : field.value]));
+    if (build.setBlocks([{ pos: block.pos, state: block.state, blockEntity: entity }])) status('已更新方块实体数据');
+  } catch (error) { handleError(error); }
+});
 
 function updateScene(change = {}) {
   if (!change.selection) {
@@ -293,7 +572,10 @@ function updateScene(change = {}) {
   byId('copy-selection').disabled = !build.selection.size;
   byId('selection-empty').hidden = Boolean(build.selection.size);
   byId('transform').hidden = !build.selection.size;
-  const bounds = boundsOf(build.selected);
+  const selected = build.selected;
+  renderSelectionState(selected);
+  renderBlockEntity(selected.length === 1 ? selected[0] : null);
+  const bounds = boundsOf(selected);
   if (bounds && (!selectionBounds || !samePoint(bounds.min, selectionBounds.min) || !samePoint(bounds.size, selectionBounds.size))) {
     originFields.forEach((input, index) => { input.value = bounds.min[index]; });
     sizeFields.forEach((input, index) => { input.value = bounds.size[index]; });
@@ -375,16 +657,18 @@ function clickScene(hit, event) {
       status(changes ? `粘贴更新了 ${changes.toLocaleString()} 个方块` : '目标位置已有相同方块');
       return;
     }
-    if (tool === 'place') build.setBlocks([{ pos: hit.place, state: brush }]);
+    const blockEntity = brushEntity ?? null;
+    if (tool === 'place') build.setBlocks([{ pos: hit.place, state: brush, blockEntity }]);
     if (tool === 'replace' && hit.cell) {
       const changes = build.selection.has(cellKey(hit.cell))
-        ? build.paintSelection(brush)
-        : build.setBlocks([{ pos: hit.cell, state: brush }]);
+        ? build.paintSelection(brush, blockEntity)
+        : build.setBlocks([{ pos: hit.cell, state: brush, blockEntity }]);
       status(changes ? `已替换 ${changes.toLocaleString()} 个方块` : '目标已是当前画笔状态');
     }
     if (tool === 'erase' && hit.cell) build.setBlocks([{ pos: hit.cell, state: null }]);
     if (tool === 'pick' && hit.cell) {
-      chooseBrush(build.blocks.get(cellKey(hit.cell)).state, true);
+      const block = build.blocks.get(cellKey(hit.cell));
+      chooseBrush(block.state, true, block.blockEntity);
       status(`已吸取 ${brush.name}`);
     }
     if (tool === 'box' || tool === 'fill') {
@@ -398,7 +682,7 @@ function clickScene(hit, event) {
         const count = build.selectBox(firstCorner, pos);
         status(`已选中 ${count.toLocaleString()} 个方块`);
       } else {
-        const count = build.fillBox(firstCorner, pos, brush);
+        const count = build.fillBox(firstCorner, pos, brush, false, blockEntity);
         status(`填充更新了 ${count.toLocaleString()} 个方块`);
       }
       firstCorner = null;
@@ -565,7 +849,9 @@ function updateCatalog() {
   }
   catalog = new BlockCatalog(active, locale, officialLanguages);
   modelPreview.setCatalog();
-  chooseBrush(brush && catalog.blocks.has(brush.name) ? brush : null);
+  chooseBrush(brush && catalog.blocks.has(brush.name) ? brush : null, false, brushEntity);
+  renderSelectionState(build.selected, true);
+  updateBannerPatterns();
   viewport?.setCatalog(catalog);
   const selectedModId = modIdFilter.value;
   renderModIds();
@@ -597,7 +883,7 @@ function renderLanguages() {
 
 function updateNames() {
   catalog.setLocale(locale);
-  updateBrushName();
+  renderSelectedBlock(inspectedSelection);
   renderPalette(false);
   renderLanguages();
 }
@@ -980,10 +1266,22 @@ byId('block-language').addEventListener('change', event => {
   updateNames();
   void loadOfficialLanguage();
 });
-byId('palette').addEventListener('click', event => {
-  const button = event.target.closest('[data-block]');
-  if (button) chooseBrush(catalog.blocks.get(button.dataset.block).state, true);
+palette.addEventListener('click', event => {
+  const tile = event.target.closest('[data-block]');
+  if (!tile) return;
+  const block = catalog.blocks.get(tile.dataset.block);
+  if (brush?.name !== block.name) chooseBrush(block.state, true);
+  if (brushPopoverTile === tile) brushPopover.hidePopover();
+  else showBrushPopover(tile, block, event.detail === 0);
 });
+brushPopover.addEventListener('beforetoggle', event => {
+  if (event.newState !== 'closed') return;
+  brushPopoverTile?.setAttribute('aria-expanded', 'false');
+  brushPopoverTile = undefined;
+});
+byId('close-brush-popover').addEventListener('click', () => brushPopover.hidePopover());
+paletteScroll.addEventListener('scroll', positionBrushPopover);
+window.addEventListener('resize', positionBrushPopover);
 
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => button.closest('dialog').close());
 for (const button of presetButtons) button.addEventListener('click', () => frame(button.dataset.preset));
@@ -1026,6 +1324,9 @@ for (const button of byId('save-menu').querySelectorAll('button')) button.addEve
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.dropdown, #project-save')) setSaveMenu(false);
+  if (brushPopoverTile && !brushPopover.contains(event.target) && !brushPopoverTile.contains(event.target)) {
+    brushPopover.hidePopover();
+  }
 });
 onClick('undo', () => applyHistory('undo'));
 onClick('redo', () => applyHistory('redo'));
@@ -1082,7 +1383,7 @@ document.addEventListener('keydown', event => {
       if (button.disabled || (chord === 'c' && window.getSelection()?.isCollapsed === false)) return;
       event.preventDefault();
       if (!event.repeat) button.click();
-    } else if (!editing && ['z', 'shift+z', 'y'].includes(chord)) {
+    } else if ((!editing || event.target.matches?.('#selection-state-fields select')) && ['z', 'shift+z', 'y'].includes(chord)) {
       event.preventDefault();
       applyHistory(chord === 'z' ? 'undo' : 'redo');
     } else if (!editing && chord === 'a') {
@@ -1093,7 +1394,10 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (key === 'escape' && !event.altKey && !event.repeat) {
-    if (tool === 'paste') {
+    if (brushPopover.matches(':popover-open')) {
+      event.preventDefault();
+      brushPopover.hidePopover();
+    } else if (tool === 'paste') {
       setSaveMenu(false);
       toggleTool('select');
     } else if (!editing) {
@@ -1129,7 +1433,6 @@ build.onChange(updateScene);
 updateScene();
 renderPalette();
 renderLanguages();
-renderBrush();
 renderPacks();
 renderMcp();
 

@@ -1,6 +1,7 @@
 use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use nucleation::{
     BlockState, Region, UniversalSchematic,
+    block_entity::BlockEntity,
     dataconverter::block_state_keys,
     formats::{
         limits::DecodeLimits,
@@ -18,6 +19,7 @@ use std::{
 };
 
 mod bedrock;
+mod block_entities;
 
 pub const MAX_STRUCTURE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BLOCKS: usize = 200_000;
@@ -64,6 +66,12 @@ pub struct Structure {
 struct PlacedBlock {
     pos: [i32; 3],
     state: SceneBlockState,
+    #[serde(
+        default,
+        rename = "blockEntity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    block_entity: Option<Box<block_entities::BlockEntityData>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,13 +195,21 @@ fn check_position(pos: [i32; 3]) -> Result<(), String> {
 }
 
 fn add_block(
-    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+    blocks: &mut HashMap<[i32; 3], PlacedBlock>,
     pos: [i32; 3],
     state: &SceneBlockState,
+    entity: Option<&NbtMap>,
 ) -> Result<(), String> {
     if !state.is_air() {
         check_position(pos)?;
-        blocks.insert(pos, state.clone());
+        blocks.insert(
+            pos,
+            PlacedBlock {
+                pos,
+                state: state.clone(),
+                block_entity: entity.and_then(|tag| block_entities::read(state, tag)),
+            },
+        );
         if blocks.len() > MAX_BLOCKS {
             return Err("结构的方块数量超过编辑器上限。".into());
         }
@@ -317,7 +333,7 @@ fn read_java_nbt(bytes: &[u8]) -> Result<NbtMap, String> {
 
 fn decode_java(
     data: &[u8],
-    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+    blocks: &mut HashMap<[i32; 3], PlacedBlock>,
 ) -> Result<Option<i32>, String> {
     let root = read_java_nbt(data)?;
     let invalid = "文件不是有效的 Minecraft Java 版原版结构。";
@@ -352,7 +368,12 @@ fn decode_java(
             .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| palette.get(index))
             .ok_or("结构引用了无效的方块索引。")?;
-        add_block(blocks, pos, state)?;
+        add_block(
+            blocks,
+            pos,
+            state,
+            entry.get("nbt").and_then(NbtValue::as_compound),
+        )?;
     }
     root.get("DataVersion")
         .map(|tag| {
@@ -364,7 +385,7 @@ fn decode_java(
 
 fn decode_litematic(
     data: &[u8],
-    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+    blocks: &mut HashMap<[i32; 3], PlacedBlock>,
 ) -> Result<(Option<String>, Option<i32>), String> {
     let limits = structure_limits(MAX_LITEMATIC_VOLUME, NBT_LIMITS);
     // The crate accepts gzip for this format. Also accept raw NBT from older workflows.
@@ -405,7 +426,7 @@ fn structure_limits(max_volume: usize, nbt: NbtReadLimits) -> DecodeLimits {
 fn add_region_blocks(
     region: &Region,
     offset: [i32; 3],
-    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+    blocks: &mut HashMap<[i32; 3], PlacedBlock>,
 ) -> Result<(), String> {
     let palette = region
         .get_palette()
@@ -427,7 +448,11 @@ fn add_region_blocks(
                 .checked_add(offset[axis])
                 .ok_or("方块坐标超出编辑器上限。")?;
         }
-        add_block(blocks, placed, &palette[index as usize])?;
+        let entity = region
+            .block_entities
+            .get(&(x, y, z))
+            .map(|entity| entity.nbt.as_ref());
+        add_block(blocks, placed, &palette[index as usize], entity)?;
     }
     Ok(())
 }
@@ -442,10 +467,7 @@ pub fn decode(data: &[u8], format: StructureFormat, filename: &str) -> Result<St
         StructureFormat::Litematic => decode_litematic(data, &mut blocks)?,
         StructureFormat::Mcstructure => bedrock::decode(data, &mut blocks)?,
     };
-    let mut blocks: Vec<_> = blocks
-        .into_iter()
-        .map(|(pos, state)| PlacedBlock { pos, state })
-        .collect();
+    let mut blocks: Vec<_> = blocks.into_values().collect();
     blocks.sort_unstable_by_key(|block| [block.pos[1], block.pos[2], block.pos[0]]);
     Ok(Structure {
         version: 1,
@@ -473,10 +495,12 @@ fn encode_java(
             index
         });
         let pos = std::array::from_fn(|axis| block.pos[axis] - offset[axis]);
-        entries.push(NbtValue::Compound(nbt_compound([
-            ("pos", nbt_vector(pos)),
-            ("state", NbtValue::Int(index)),
-        ])));
+        let mut entry = nbt_compound([("pos", nbt_vector(pos)), ("state", NbtValue::Int(index))]);
+        if let Some((id, mut tag)) = block_entities::write(block, data_version)? {
+            tag.insert("id".into(), NbtValue::String(id.into()));
+            entry.insert("nbt".into(), NbtValue::Compound(tag));
+        }
+        entries.push(NbtValue::Compound(entry));
     }
     let root = nbt_compound([
         ("DataVersion", NbtValue::Int(data_version)),
@@ -533,7 +557,17 @@ fn encode_litematic(
     if size.into_iter().map(i64::from).product::<i64>() > MAX_LITEMATIC_VOLUME as i64 {
         return Err("投影的包围盒超过 1600 万格。".into());
     }
-    let region = build_region(blocks, offset, origin, size)?;
+    let mut region = build_region(blocks, offset, origin, size)?;
+    for block in blocks {
+        if let Some((id, mut tag)) = block_entities::write(block, project.data_version)? {
+            tag.insert("id".into(), NbtValue::String(id.into()));
+            let [x, y, z] =
+                std::array::from_fn(|axis| origin[axis] + block.pos[axis] - offset[axis]);
+            let mut entity = BlockEntity::new(id.into(), (x, y, z));
+            entity.set_nbt(tag);
+            region.add_block_entity(entity);
+        }
+    }
     let mut schematic = UniversalSchematic::new(project.name.clone());
     schematic.metadata.author = Some("Builder MCP".into());
     schematic.metadata.mc_version = Some(project.data_version);
@@ -667,11 +701,41 @@ mod tests {
     }
 
     #[test]
+    fn java_formats_preserve_banner_patterns_and_jigsaw_at_their_block_positions() {
+        let mut expected: Structure = serde_json::from_value(json!({
+            "version": 1, "name": "Fixture", "dataVersion": 3955,
+            "blocks": [
+                {"pos": [2, 1, 4], "state": {"name": "minecraft:red_banner"}, "blockEntity": {
+                    "patterns": [{"pattern": "minecraft:stripe_top", "color": "white"}]
+                }},
+                {"pos": [3, 1, 4], "state": {"name": "minecraft:red_banner"}, "blockEntity": {
+                    "patterns": [{"pattern": "minecraft:rhombus", "color": "blue"}]
+                }},
+                {"pos": [4, 1, 4], "state": {"name": "minecraft:jigsaw", "properties": {"orientation": "east_up"}},
+                    "blockEntity": {
+                        "name": "fixture:entry", "target": "fixture:exit", "pool": "fixture:rooms",
+                        "final_state": "minecraft:oak_log[axis=x]", "joint": "aligned",
+                        "selection_priority": 2, "placement_priority": -1
+                    }
+                }
+            ]
+        })).unwrap();
+        for version in [3465, 3955, 5023] {
+            expected.data_version = version;
+            for format in [StructureFormat::Nbt, StructureFormat::Litematic] {
+                let bytes = encode(&expected, format, true).unwrap();
+                assert_eq!(decode(&bytes, format, "Fixture").unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
     fn structures_store_the_exporter_version_and_used_namespaces() {
         let mut fixture = project();
         fixture.blocks.push(PlacedBlock {
             pos: [-4, 4, 4],
             state: SceneBlockState::from_parts("create:casing".into(), BTreeMap::new()).unwrap(),
+            block_entity: None,
         });
         for format in [StructureFormat::Nbt, StructureFormat::Litematic] {
             let bytes = encode(&fixture, format, true).unwrap();

@@ -1,4 +1,5 @@
 import { dataVersionFor } from './minecraft-versions.js';
+import { blockEntityOf } from './block-entities.js';
 
 export const DEFAULT_DATA_VERSION = dataVersionFor('1.21.1');
 export const JAVA_STRUCTURE_FORMATS = ['nbt', 'litematic'];
@@ -131,7 +132,7 @@ export class BuildScene {
     for (const input of blocks) {
       const pos = [...point(input?.pos)];
       const state = stateOf(input?.state);
-      if (!isAir(state.name)) loaded.set(cellKey(pos), { pos, state });
+      if (!isAir(state.name)) loaded.set(cellKey(pos), placedBlock(pos, state, blockEntityOf(state, input.blockEntity)));
     }
     this.blocks = loaded;
     Object.assign(this, metadata);
@@ -181,9 +182,9 @@ export class BuildScene {
     point(target.map((n, axis) => n + size[axis] - 1), '粘贴末端');
 
     const updates = new Map();
-    for (const { pos: offset, state } of blocks) {
+    for (const { pos: offset, state, blockEntity } of blocks) {
       const pos = target.map((n, axis) => n + offset[axis]);
-      updates.set(cellKey(pos), { pos, state });
+      updates.set(cellKey(pos), placedBlock(pos, state, blockEntity));
     }
     const changes = this.apply(updates, updates.keys());
     if (!changes) this.select(updates.keys());
@@ -201,16 +202,25 @@ export class BuildScene {
     const updates = new Map();
     for (const input of entries) {
       const pos = [...point(input?.pos)];
+      const key = cellKey(pos);
       const state = input.state === null ? null : stateOf(input.state);
-      updates.set(cellKey(pos), state && !isAir(state.name) ? { pos, state } : null);
+      if (!state || isAir(state.name)) {
+        updates.set(key, null);
+        continue;
+      }
+      const before = updates.has(key) ? updates.get(key) : this.blocks.get(key);
+      const entity = Object.hasOwn(input, 'blockEntity') ? blockEntityOf(state, input.blockEntity)
+        : before?.state.name === state.name ? before.blockEntity : undefined;
+      updates.set(key, placedBlock(pos, state, entity));
     }
     return this.apply(updates, selection);
   }
 
-  fillBox(a, b, input, hollow = false) {
+  fillBox(a, b, input, hollow = false, entity) {
     const { min, max, size } = boxBetween(point(a), point(b));
     const state = stateOf(input);
     if (isAir(state.name)) return this.removeBox(min, max);
+    const blockEntity = blockEntityOf(state, entity);
     const volume = size[0] * size[1] * size[2];
     const interior = size.reduce((n, edge) => n * Math.max(0, edge - 2), 1);
     if (volume > MAX_FILL_VOLUME || volume - (hollow ? interior : 0) > MAX_BLOCKS) throw new Error('填充区域太大。');
@@ -225,7 +235,10 @@ export class BuildScene {
         for (let x = min[0]; x <= max[0]; x++) {
           if (hollow && x > min[0] && x < max[0] && y > min[1] && y < max[1] && z > min[2] && z < max[2]) continue;
           const pos = [x, y, z];
-          updates.set(cellKey(pos), { pos, state });
+          const key = cellKey(pos);
+          const before = this.blocks.get(key);
+          const data = entity === undefined && before?.state.name === state.name ? before.blockEntity : blockEntity;
+          updates.set(key, placedBlock(pos, state, data));
         }
       }
     }
@@ -243,9 +256,9 @@ export class BuildScene {
     return this.apply(new Map([...this.selection].map(key => [key, null])), new Set());
   }
 
-  paintSelection(input) {
+  paintSelection(input, entity) {
     const state = stateOf(input);
-    return this.setBlocks(this.selected.map(({ pos }) => ({ pos, state })));
+    return this.setBlocks(this.selected.map(({ pos }) => entity === undefined ? { pos, state } : { pos, state, blockEntity: entity }));
   }
 
   transform({ origin, rotation = 0, size } = {}) {
@@ -263,7 +276,7 @@ export class BuildScene {
     const scaleBoundary = (n, axis) => Math.ceil(n * targetSize[axis] / rotatedSize[axis] - 0.5);
     const updates = new Map([...this.selection].map(key => [key, null]));
     const keys = new Set();
-    for (const { pos, state } of selected) {
+    for (const { pos, state, blockEntity } of selected) {
       const [x, y, z] = pos.map((n, i) => n - bounds.min[i]);
       const rotated = [[x, y, z], [depth - 1 - z, y, x], [width - 1 - x, y, depth - 1 - z], [z, y, width - 1 - x]][turns];
       const min = rotated.map(scaleBoundary);
@@ -278,7 +291,7 @@ export class BuildScene {
             const nextPos = [target[0] + sx, target[1] + sy, target[2] + sz];
             const key = cellKey(nextPos);
             if (this.blocks.has(key) && !this.selection.has(key)) throw new Error(`变换与 (${key}) 处的方块重叠。`);
-            updates.set(key, { pos: nextPos, state: nextState });
+            updates.set(key, placedBlock(nextPos, nextState, blockEntity));
             keys.add(key);
           }
         }
@@ -293,7 +306,8 @@ export class BuildScene {
     let count = this.blocks.size;
     for (const [key, after] of updates) {
       const before = this.blocks.get(key) ?? null;
-      if ((!before && !after) || (before && after && stateKey(before.state) === stateKey(after.state))) continue;
+      if ((!before && !after) || (before && after && stateKey(before.state) === stateKey(after.state)
+        && JSON.stringify(before.blockEntity) === JSON.stringify(after.blockEntity))) continue;
       count += Number(Boolean(after)) - Number(Boolean(before));
       changes.set(key, { before, after });
     }
@@ -348,4 +362,8 @@ export class BuildScene {
     this.restore(entry, 'after');
     return true;
   }
+}
+
+function placedBlock(pos, state, blockEntity) {
+  return blockEntity ? { pos, state, blockEntity } : { pos, state };
 }

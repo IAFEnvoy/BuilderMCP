@@ -101,14 +101,14 @@
       <aside class="inspector" aria-label="检查器">
         <div class="panel-heading inspector-title"><h2><i data-icon="sliders-horizontal"></i>检查器</h2></div>
         <div class="inspector-scroll">
-          <section class="inspector-section brush-section">
-            <h3><i data-icon="box"></i>画笔方块</h3>
-            <p id="brush-empty" class="brush-properties property-empty">未选择方块</p>
-            <div class="brush-card" id="brush-card" hidden>
-              <span class="brush-thumbnail"><canvas id="brush-icon" width="64" height="64"></canvas></span>
-              <div><strong id="brush-name"></strong><code id="brush-id"></code></div>
+          <section class="inspector-section" id="selection-state" aria-labelledby="selection-state-title" hidden>
+            <h3 id="selection-state-title"><i data-icon="box"></i>选中方块</h3>
+            <div class="selected-block-card" id="selected-block-card" hidden>
+              <span class="selected-block-thumbnail" id="selected-block-thumbnail" aria-hidden="true"></span>
+              <div><strong id="selected-block-name"></strong><code id="selected-block-id"></code></div>
             </div>
-            <div class="brush-properties" id="brush-properties" hidden></div>
+            <p class="selected-block-mixed property-empty" id="selected-block-mixed" hidden>已选中多种方块</p>
+            <div class="selection-state-fields" id="selection-state-fields"></div>
           </section>
           <section class="inspector-section selection-section">
             <div class="section-heading"><h3><i data-icon="scan-line"></i>选区变换</h3><span class="small-count" id="selection-count">0</span></div>
@@ -123,6 +123,15 @@
               <div class="transform-row"><button type="button" class="button subtle" data-rotation="-90" title="逆时针转 90°"><i data-icon="rotate-ccw"></i>−90°</button><button type="button" class="button subtle" data-rotation="90" title="顺时针转 90°"><i data-icon="rotate-cw"></i>90°</button></div>
               <button type="button" class="button subtle danger" id="delete-selection" title="删除选区 (Delete)"><i data-icon="trash-2"></i>删除</button>
             </form>
+          </section>
+          <section class="inspector-section" id="block-entity-panel" hidden>
+            <h3><i data-icon="settings-2"></i><span id="block-entity-title"></span></h3>
+            <form id="block-entity-form" class="transform">
+              <div id="block-entity-fields" class="block-entity-fields"></div>
+              <button type="button" id="banner-add-layer" class="button subtle" hidden><i data-icon="plus"></i>添加图案</button>
+              <button type="submit" class="button subtle">应用到选中方块</button>
+            </form>
+            <datalist id="banner-pattern-ids"></datalist>
           </section>
           <section class="inspector-section scene-section">
             <div class="section-heading"><h3><i data-icon="layers"></i>场景</h3><button class="icon-button small" id="scene-settings" title="项目设置" aria-label="项目设置"><i data-icon="settings-2"></i></button></div>
@@ -219,6 +228,13 @@
         <div><dt>保存 / 另存为</dt><dd><kbd>Ctrl+S</kbd><kbd>Ctrl+Shift+S</kbd></dd></div>
       </dl>
     </dialog>
+    <div class="brush-popover" id="brush-popover" popover="manual" role="dialog" aria-labelledby="brush-popover-title">
+      <div class="section-heading">
+        <h2 id="brush-popover-title">画笔属性</h2>
+        <button type="button" class="icon-button small" id="close-brush-popover" aria-label="关闭画笔属性" title="关闭画笔属性"><i data-icon="x"></i></button>
+      </div>
+      <div class="brush-properties" id="brush-properties"></div>
+    </div>
     <div id="file-drop-hint" class="file-drop-hint" popover="manual" aria-hidden="true">
       <div><strong>松开鼠标以处理文件</strong><span id="file-drop-formats"></span></div>
     </div>

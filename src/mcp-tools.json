@@ -10,6 +10,22 @@
       { "type": "object", "required": ["name"], "additionalProperties": false, "properties": {
         "name": { "type": "string" }, "properties": { "type": "object", "additionalProperties": { "type": "string" } }
       } }
+    ] },
+    "blockEntity": { "description": "Banner pattern layers or Java jigsaw settings for this block.", "oneOf": [
+      { "type": "object", "required": ["patterns"], "additionalProperties": false, "properties": {
+        "patterns": { "type": "array", "maxItems": 16, "items": {
+          "type": "object", "required": ["pattern", "color"], "additionalProperties": false, "properties": {
+            "pattern": { "type": "string" },
+            "color": { "enum": ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"] }
+          }
+        } }
+      } },
+      { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string" }, "target": { "type": "string" }, "pool": { "type": "string" },
+        "final_state": { "type": "string", "maxLength": 2048 }, "joint": { "enum": ["aligned", "rollable"] },
+        "selection_priority": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "placement_priority": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+      } }
     ] }
   },
   "tools": [
@@ -46,7 +62,7 @@
       } }
     },
     {
-      "name": "list_blocks", "description": "Read placed blocks and their states, optionally inside an inclusive box. Results are ordered by Y, Z, X and paginated.",
+      "name": "list_blocks", "description": "Read placed blocks and their states, including banner patterns and jigsaw settings when present. Results are ordered by Y, Z, X and paginated.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
         "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" },
@@ -64,11 +80,12 @@
       } }
     },
     {
-      "name": "set_blocks", "description": "Set individual cells in one undoable operation. An existing cell may be replaced. Use a null state or minecraft:air to remove a cell.",
+      "name": "set_blocks", "description": "Set individual cells in one undoable operation. Optionally set blockEntity for a banner or jigsaw. Omit it to preserve existing data for the same block ID, or use null to clear it. Use a null state or minecraft:air to remove a cell.",
       "annotations": { "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["blocks"], "additionalProperties": false, "properties": {
         "blocks": { "type": "array", "maxItems": 20000, "items": { "type": "object", "required": ["pos", "state"], "additionalProperties": false,
-          "properties": { "pos": { "$ref": "#/$defs/cell" }, "state": { "anyOf": [{ "$ref": "#/$defs/state" }, { "type": "null" }] } } } }
+          "properties": { "pos": { "$ref": "#/$defs/cell" }, "state": { "anyOf": [{ "$ref": "#/$defs/state" }, { "type": "null" }] },
+            "blockEntity": { "anyOf": [{ "$ref": "#/$defs/blockEntity" }, { "type": "null" }] } } } }
       } }
     },
     {
@@ -140,10 +157,14 @@
       } }
     },
     {
-      "name": "render_block_states", "description": "Preview placed block models using the active resource packs. Returns one 256×256 PNG with a transparent background per state in input order. Missing block models or textures use a purple and black checkerboard. Air returns an empty image. Uses the default isometric angle unless follow_camera is true. Each image frames its block independently.",
+      "name": "render_block_states", "description": "Preview placed block models using the active resource packs. Wrap a state with blockEntity to show banner patterns. Returns one 256×256 transparent PNG per state in input order. Missing models or textures use a purple and black checkerboard. Air returns an empty image. Each image frames its block independently.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["states"], "additionalProperties": false, "properties": {
-        "states": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/state" } },
+        "states": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "anyOf": [
+          { "$ref": "#/$defs/state" },
+          { "type": "object", "required": ["state", "blockEntity"], "additionalProperties": false,
+            "properties": { "state": { "$ref": "#/$defs/state" }, "blockEntity": { "$ref": "#/$defs/blockEntity" } } }
+        ] } },
         "follow_camera": { "type": "boolean", "default": false, "description": "Use the live viewport orientation and projection with the block centered in the preview." }
       } }
     },

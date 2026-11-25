@@ -117,6 +117,8 @@ export class Viewport {
     this.materials = new Map();
     this.textures = new Map();
     this.animatedTextures = new Set();
+    this.markers = new Set();
+    this.markerRotation = new THREE.Quaternion(0, 0, 0, 0);
     this.layer = 0;
     this.raycaster = new THREE.Raycaster();
     this.floor = new THREE.Plane(Y_UP, 0);
@@ -214,6 +216,7 @@ export class Viewport {
 
   render() {
     this.updateClippingPlanes();
+    this.updateMarkers();
     const distance = this.viewDistance;
     this.grid.position.set(this.controls.target.x, this.layer - 0.009, this.controls.target.z);
     this.grid.scale.setScalar(Math.max(25, distance * 1.25));
@@ -261,6 +264,7 @@ export class Viewport {
 
   disposeView(view) {
     for (const mesh of view.children) {
+      this.markers.delete(mesh);
       const source = mesh.userData.textureSource;
       if (--source.users === 0) this.animatedTextures.delete(source);
       mesh.dispose();
@@ -286,9 +290,9 @@ export class Viewport {
     const blocks = this.chunks.get(key);
     if (!blocks?.size) { this.chunks.delete(key); return; }
     const batches = new Map();
-    for (const { pos, state } of blocks.values()) {
+    for (const { pos, state, blockEntity } of blocks.values()) {
       const tint = tintFor(state.name);
-      for (const part of this.catalog.parts(state, pos)) {
+      for (const part of this.catalog.parts(state, pos, blockEntity)) {
         const id = `${part.key}|${tint.getHexString()}`;
         if (!batches.has(id)) batches.set(id, { part, tint, cells: [] });
         batches.get(id).cells.push(pos);
@@ -306,6 +310,10 @@ export class Viewport {
         cells.forEach((pos, index) => mesh.setMatrixAt(index, matrix.makeTranslation(...pos)));
         mesh.userData.cells = cells;
         mesh.userData.textureSource = source;
+        if (part.marker) {
+          this.markers.add(mesh);
+          this.markerRotation.set(0, 0, 0, 0);
+        }
         view.add(mesh);
       }
     }
@@ -373,16 +381,35 @@ export class Viewport {
     return this.grid.visible;
   }
 
+  updateMarkers() {
+    const rotation = this.camera.quaternion;
+    if (!this.markers.size || this.markerRotation.equals(rotation)) return;
+    this.markerRotation.copy(rotation);
+    const offset = new THREE.Vector3(0.5, 0.5, 0.5);
+    offset.sub(new THREE.Vector3(0.5, 0.5, 0.5).applyQuaternion(rotation));
+    const matrix = new THREE.Matrix4().makeRotationFromQuaternion(rotation);
+    for (const mesh of this.markers) {
+      mesh.userData.cells.forEach(([x, y, z], index) => {
+        mesh.setMatrixAt(index, matrix.setPosition(x + offset.x, y + offset.y, z + offset.z));
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.boundingSphere = null;
+    }
+  }
+
   pick(x, y) {
     const rect = this.canvas.getBoundingClientRect();
     const cursor = new THREE.Vector2((x - rect.left) / rect.width * 2 - 1, -(y - rect.top) / rect.height * 2 + 1);
     this.camera.updateMatrixWorld();
+    this.updateMarkers();
     this.group.updateMatrixWorld();
     this.raycaster.setFromCamera(cursor, this.camera);
     const hit = this.raycaster.intersectObject(this.group, true).find(({ object }) => object.material.visible);
     if (hit) {
       const cell = hit.object.userData.cells[hit.instanceId];
-      const normal = hit.face.normal.toArray();
+      const normal = (this.markers.has(hit.object)
+        ? hit.face.normal.clone().applyQuaternion(this.camera.quaternion)
+        : hit.face.normal).toArray();
       const direction = normal.map(Math.abs).indexOf(Math.max(...normal.map(Math.abs)));
       const adjacent = cell.map((n, i) => n + (i === direction ? Math.sign(normal[i]) : 0));
       return { cell, place: adjacent };
@@ -521,11 +548,13 @@ export class Viewport {
 
     // Render the building group directly to preserve alpha and exclude editor guides.
     this.renderer.setDrawingBufferSize(canvas.width, canvas.height, 1);
+    for (const mesh of this.markers) mesh.visible = false;
     try {
       this.updateClippingPlanes();
       this.renderer.render(this.group, this.camera);
       canvas.getContext('2d').drawImage(this.canvas, 0, 0);
     } finally {
+      for (const mesh of this.markers) mesh.visible = true;
       this.renderer.setDrawingBufferSize(width, height, pixelRatio);
       this.invalidate();
     }

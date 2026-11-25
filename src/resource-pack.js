@@ -1,9 +1,12 @@
 import { strFromU8, unzip } from 'fflate';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, normalizeLocale } from './locales.js';
 import { isAir, stateOf } from './scene.js';
+import { specialBlockPart, specialBlockProperties } from './special-blocks.js';
 import { decodeTexture, TEXTURE_TICK_MS } from './texture-animation.js';
 
 const assetPath = /^(?:[^/]+\/)*?assets\/([a-z0-9_.-]+)\/(blockstates|models|items|textures|lang)\/(.+)$/;
+const bannerPatternPath = /^(?:[^/]+\/)*?data\/([a-z0-9_.-]+)\/banner_pattern\/([a-z0-9_./-]+)\.json$/;
+const patternTexturePath = /^([a-z0-9_.-]+):entity\/banner\/([a-z0-9_./-]+)$/;
 const MAX_EXPANDED_BYTES = 384 * 1024 * 1024;
 const preferred = ['north', 'y', 'bottom', 'straight', 'false', 'single', 'none', '0'];
 const missingBlockPart = {
@@ -41,7 +44,7 @@ function parseJson(bytes) {
 }
 
 function supported(file) {
-  if (file === 'version.json') return true;
+  if (file === 'version.json' || bannerPatternPath.test(file)) return true;
   const [, , kind, path] = assetPath.exec(file) ?? [];
   if (kind === 'blockstates' || kind === 'models' || kind === 'items') return path.endsWith('.json');
   if (kind === 'textures') return /\.png(?:\.mcmeta)?$/.test(path);
@@ -80,7 +83,7 @@ export async function loadArchive(bytes, progress) {
       },
     }, (error, data) => error ? reject(error) : resolve(data));
   });
-  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), animation: new Map(), languages: new Map(), minecraftVersion: null };
+  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), animation: new Map(), languages: new Map(), bannerPatterns: new Map(), minecraftVersion: null };
   const languageEntries = [];
   const entries = Object.entries(files);
   const total = entries.length;
@@ -98,6 +101,15 @@ export async function loadArchive(bytes, progress) {
       const version = parseJson(data);
       if (Number.isInteger(version?.world_version) && typeof version.id === 'string' && /^[a-z0-9][a-z0-9._+-]{0,79}$/i.test(version.id)) {
         pack.minecraftVersion = version.id;
+      }
+      processed++;
+      continue;
+    }
+    const banner = bannerPatternPath.exec(filename);
+    if (banner) {
+      const definition = parseJson(data);
+      if (typeof definition?.asset_id === 'string' && /^(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+$/.test(definition.asset_id)) {
+        pack.bannerPatterns.set(banner[1] + ':' + banner[2], qualify(definition.asset_id, 'minecraft'));
       }
       processed++;
       continue;
@@ -131,7 +143,7 @@ export async function loadArchive(bytes, progress) {
     processed++;
   }
   if (!pack.states.has('minecraft:stone') || !pack.languages.get(ENGLISH_LOCALE)?.has('block.minecraft.stone')) pack.minecraftVersion = null;
-  if (!pack.states.size && !pack.models.size && !pack.items.size && !pack.textures.size && !pack.animation.size && !pack.languages.size) {
+  if (!pack.states.size && !pack.models.size && !pack.items.size && !pack.textures.size && !pack.animation.size && !pack.languages.size && !pack.bannerPatterns.size) {
     throw new Error('资源包中没有找到可用的方块数据、纹理或译名。');
   }
   progress?.({ stage: 'index', processed, total });
@@ -244,6 +256,7 @@ export class BlockCatalog {
     this.items = new Map();
     this.textures = new Map();
     this.languages = new Map();
+    this.bannerPatterns = new Map();
     this.locale = locale;
     this.officialLanguages = officialLanguages;
     this.blocks = new Map();
@@ -253,6 +266,7 @@ export class BlockCatalog {
       for (const [key, value] of pack.states) this.states.set(key, value);
       for (const [key, value] of pack.models) this.models.set(key, value);
       for (const [key, value] of pack.items ?? []) this.items.set(key, value);
+      for (const [key, value] of pack.bannerPatterns ?? []) this.bannerPatterns.set(key, value);
       for (const [key, bytes] of pack.textures) this.textures.set(key, { bytes });
       for (const [key, animation] of pack.animation) {
         const texture = this.textures.get(key);
@@ -266,7 +280,7 @@ export class BlockCatalog {
     }
     for (const [name, definition] of this.states) {
       try {
-        const properties = propertyOptions(definition);
+        const properties = { ...propertyOptions(definition), ...specialBlockProperties(name) };
         const defaults = Object.fromEntries(Object.entries(properties).map(([key, values]) => [key, values[0]]));
         const block = { name, label: this.label(name), category: categoryOf(name), properties, state: stateOf({ name, properties: defaults }) };
         this.blocks.set(name, block);
@@ -309,6 +323,61 @@ export class BlockCatalog {
     const state = stateOf(input);
     const base = this.blocks.get(state.name)?.state;
     return stateOf({ name: state.name, properties: { ...base?.properties, ...state.properties } });
+  }
+
+  stateProperties(name) {
+    return this.blocks.get(name)?.properties ?? specialBlockProperties(name);
+  }
+
+  selectionProperties(blocks) {
+    const common = new Map();
+    const definitions = new Map();
+    for (const [index, { state }] of blocks.entries()) {
+      const firstOfType = !definitions.has(state.name);
+      if (firstOfType) definitions.set(state.name, this.stateProperties(state.name));
+      const definition = definitions.get(state.name);
+      const stored = state.properties ?? {};
+      if (index === 0) {
+        for (const key of [...Object.keys(definition), ...Object.keys(stored)]) {
+          common.set(key, { key, value: undefined, options: undefined });
+        }
+      }
+      for (const property of common.values()) {
+        const { key, options } = property;
+        const allowed = Object.hasOwn(definition, key) ? definition[key] : undefined;
+        const value = Object.hasOwn(stored, key) ? stored[key] : allowed?.[0];
+        if (value === undefined) {
+          common.delete(key);
+          continue;
+        }
+        if (firstOfType && allowed) {
+          property.options = options ? options.filter(choice => allowed.includes(choice)) : allowed;
+          if (!property.options.length) {
+            common.delete(key);
+            continue;
+          }
+        }
+        if (index === 0) property.value = value;
+        else if (property.value !== value) property.value = undefined;
+      }
+      if (!common.size) break;
+    }
+    return [...common.values()];
+  }
+
+  bannerPatternTexture(pattern) {
+    const [namespace, name] = (this.bannerPatterns.get(pattern) ?? pattern).split(':');
+    const texture = namespace + ':entity/banner/' + name;
+    return this.textures.has(texture) ? texture : null;
+  }
+
+  bannerPatternIds() {
+    const ids = new Set(this.bannerPatterns.keys());
+    for (const texture of this.textures.keys()) {
+      const match = patternTexturePath.exec(texture);
+      if (match && match[2] !== 'banner_base') ids.add(match[1] + ':' + match[2]);
+    }
+    return [...ids].sort();
   }
 
   model(name, visiting = new Set()) {
@@ -386,12 +455,13 @@ export class BlockCatalog {
     });
   }
 
-  parts(state, pos) {
+  parts(state, pos, entity) {
     const { name, properties = {} } = state;
     if (isAir(name)) return [];
     const definition = this.states.get(name);
+    const completed = { ...this.blocks.get(name)?.state.properties, ...properties };
+    let particle;
     if (definition) {
-      const completed = { ...this.blocks.get(name)?.state.properties, ...properties };
       const variants = variantsOf(definition);
       const match = variants.find(([key]) => key && accepts(variantCondition(key), completed)) ?? variants.find(([key]) => !key) ?? variants[0];
       const choices = match ? [match[1]] : [];
@@ -401,6 +471,7 @@ export class BlockCatalog {
         const selected = chooseWeighted(choice, pos, i);
         if (typeof selected?.model !== 'string') return [];
         const model = this.modelRef(selected.model, namespace);
+        if (model && !particle) particle = this.textureMaterial(model, '#particle')?.texture;
         const x = Number.isFinite(selected.x) ? selected.x : 0;
         const y = Number.isFinite(selected.y) ? selected.y : 0;
         const z = Number.isFinite(selected.z) ? selected.z : 0;
@@ -413,14 +484,17 @@ export class BlockCatalog {
     const [namespace, path] = name.split(':');
     const key = `${namespace}:block/${path}`;
     const model = this.model(key);
-    return model?.elements.length ? [{ key, model }] : [missingBlockPart];
+    if (model?.elements.length) return [{ key, model }];
+    if (model && !particle) particle = this.textureMaterial(model, '#particle')?.texture;
+    return [specialBlockPart(this, { name, properties: completed }, entity, particle) ?? missingBlockPart];
   }
 
   image(key) {
     const resource = this.textures.get(key);
     if (!resource) return Promise.resolve(null);
     if (!this.images.has(key)) {
-      this.images.set(key, decodeTexture(resource.bytes, resource.animation).catch(() => null));
+      const decoded = resource.load ? resource.load() : decodeTexture(resource.bytes, resource.animation);
+      this.images.set(key, decoded.catch(() => null));
     }
     return this.images.get(key);
   }

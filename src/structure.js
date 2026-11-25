@@ -1,4 +1,5 @@
 import { gzipSync } from 'fflate';
+import { readBlockEntity, writeBlockEntity } from './block-entities.js';
 import { readNbt, TAG } from './nbt.js';
 import { boundsOf, cellKey, emptyProject, isAir, JAVA_STRUCTURE_FORMATS, MAX_BLOCKS, point, stateKey, stateOf } from './scene.js';
 
@@ -90,6 +91,16 @@ function writeEmptyLists(nbt, names) {
   for (const name of names) nbt.tag('list', name, { type: 'compound', items: [] });
 }
 
+function writeEntity(nbt, entity) {
+  for (const [key, value] of Object.entries(entity)) {
+    if (Array.isArray(value)) {
+      nbt.tag('list', key, { type: 'compound', items: value.map(layer => child => writeEntity(child, layer)) });
+    } else {
+      nbt.tag(typeof value === 'number' ? 'int' : 'string', key, value);
+    }
+  }
+}
+
 function litematicVersionFor(dataVersion) {
   // Match Nucleation's format versions for the desktop writer.
   if (dataVersion >= 3837) return 7;
@@ -112,13 +123,13 @@ export function encodeStructure(project, format, { preserveOrigin = false, softw
   const palette = litematic ? [{ name: 'minecraft:air' }] : [];
   const indices = new Map(palette.map((state, i) => [stateKey(state), i]));
   const blocks = [...project.blocks].sort((a, b) => a.pos[1] - b.pos[1] || a.pos[2] - b.pos[2] || a.pos[0] - b.pos[0]);
-  const relative = blocks.map(({ pos, state }) => {
+  const relative = blocks.map(({ pos, state, blockEntity }) => {
     const key = stateKey(state);
     if (!indices.has(key)) {
       indices.set(key, palette.length);
       palette.push(state);
     }
-    return { pos: pos.map((n, i) => n - offset[i]), index: indices.get(key) };
+    return { pos: pos.map((n, i) => n - offset[i]), index: indices.get(key), entity: writeBlockEntity(state, blockEntity, dataVersion) };
   });
   // Java 26.3 renamed the block state keys starting at DataVersion 5006.
   const paletteEntries = palette.map(state => paletteEntry(state, dataVersion >= 5006));
@@ -139,9 +150,10 @@ export function encodeStructure(project, format, { preserveOrigin = false, softw
       nbt.tag('list', 'size', { type: 'int', items: size });
       nbt.tag('list', 'palette', { type: 'compound', items: paletteEntries });
       nbt.tag('list', 'blocks', {
-        type: 'compound', items: relative.map(({ pos, index }) => block => {
+        type: 'compound', items: relative.map(({ pos, index, entity }) => block => {
           block.tag('list', 'pos', { type: 'int', items: pos });
           block.tag('int', 'state', index);
+          if (entity) block.tag('compound', 'nbt', tag => writeEntity(tag, entity));
         }),
       });
       writeEmptyLists(nbt, ['entities']);
@@ -180,7 +192,10 @@ export function encodeStructure(project, format, { preserveOrigin = false, softw
         writeVec(region, 'Size', size);
         region.tag('list', 'BlockStatePalette', { type: 'compound', items: paletteEntries });
         region.tag('longs', 'BlockStates', words);
-        writeEmptyLists(region, ['Entities', 'TileEntities', 'PendingBlockTicks']);
+        const tiles = relative.filter(block => block.entity).map(({ pos: [x, y, z], entity }) =>
+          tag => writeEntity(tag, { ...entity, x, y, z }));
+        region.tag('list', 'TileEntities', { type: 'compound', items: tiles });
+        writeEmptyLists(region, ['Entities', 'PendingBlockTicks']);
         if (version >= 5) writeEmptyLists(region, ['PendingFluidTicks']);
       });
     });
@@ -203,9 +218,10 @@ function readPalette(list) {
   });
 }
 
-function addBlock(blocks, pos, state) {
+function addBlock(blocks, pos, state, tag) {
   point(pos, '导入方块的坐标');
-  blocks.set(cellKey(pos), { pos, state });
+  const blockEntity = readBlockEntity(state, tag);
+  blocks.set(cellKey(pos), blockEntity ? { pos, state, blockEntity } : { pos, state });
   if (blocks.size > MAX_BLOCKS) throw new Error('结构的方块数量超过编辑器上限。');
 }
 
@@ -223,7 +239,7 @@ function readJavaBlocks(root, blocks) {
     }
     if (!Number.isInteger(index) || !palette[index]) throw new Error('结构引用了无效的方块索引。');
     const state = palette[index];
-    if (!isAir(state.name)) addBlock(blocks, pos, state);
+    if (!isAir(state.name)) addBlock(blocks, pos, state, entry.nbt);
   }
 }
 
@@ -231,6 +247,14 @@ function regionVector(value) {
   const result = [value?.x, value?.y, value?.z];
   if (!isVector(result)) throw new Error('Litematica 区域的坐标或尺寸无效。');
   return result;
+}
+
+function tilePosition(tag) {
+  if (tag?.Pos instanceof Uint8Array && tag.Pos.byteLength === 12) {
+    const view = new DataView(tag.Pos.buffer, tag.Pos.byteOffset, tag.Pos.byteLength);
+    return [view.getInt32(0), view.getInt32(4), view.getInt32(8)];
+  }
+  return [tag?.x, tag?.y, tag?.z];
 }
 
 function packedIndex(words, bit, bits, mask) {
@@ -246,7 +270,8 @@ function packedIndex(words, bit, bits, mask) {
 function readLitematicBlocks(root, blocks) {
   if (!isCompound(root.Regions)) throw new Error('文件缺少 Litematica 区域。');
   let totalVolume = 0;
-  for (const region of Object.values(root.Regions)) {
+  for (const name of Object.keys(root.Regions).sort()) {
+    const region = root.Regions[name];
     const position = regionVector(region?.Position);
     const size = regionVector(region?.Size);
     const min = position.map((n, axis) => size[axis] < 0 ? n + size[axis] + 1 : n);
@@ -265,12 +290,18 @@ function readLitematicBlocks(root, blocks) {
     if (!(words instanceof DataView) || words.byteLength !== Math.ceil(volume * bits / 64) * 8) {
       throw new Error('Litematica 区域的方块数据长度与调色板或尺寸不匹配。');
     }
+    const tiles = new Map();
+    for (const tag of Array.isArray(region.TileEntities) ? region.TileEntities : []) {
+      const pos = tilePosition(tag);
+      if (isVector(pos)) tiles.set(cellKey(pos), tag);
+    }
     for (let i = 0; i < volume; i++) {
       const state = palette[packedIndex(words, i * bits, bits, mask)];
       if (!state) throw new Error('投影引用了无效的方块索引。');
       if (isAir(state.name)) continue;
-      const pos = [min[0] + i % width, min[1] + Math.floor(i / layerSize), min[2] + Math.floor(i / width) % depth];
-      addBlock(blocks, pos, state);
+      const local = [i % width, Math.floor(i / layerSize), Math.floor(i / width) % depth];
+      const pos = local.map((n, axis) => n + min[axis]);
+      addBlock(blocks, pos, state, tiles.get(cellKey(local)));
     }
   }
 }

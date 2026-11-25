@@ -1,5 +1,5 @@
 use super::{
-    BUILDER_METADATA_TAG, MAX_STRUCTURE_BYTES, NBT_LIMITS, PlacedBlock, SceneBlockState, Structure,
+    BUILDER_METADATA_TAG, MAX_STRUCTURE_BYTES, NBT_LIMITS, PlacedBlock, Structure,
     add_region_blocks, build_region, builder_metadata, nbt_compound, nbt_list, nbt_position,
     nbt_vector, structure_limits,
 };
@@ -153,7 +153,7 @@ fn normalize_layers(
 
 pub(super) fn decode(
     data: &[u8],
-    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+    blocks: &mut HashMap<[i32; 3], PlacedBlock>,
 ) -> Result<(Option<String>, Option<i32>), String> {
     let mut root = read_root(data)?;
     let version = match root.get("format_version") {
@@ -227,7 +227,7 @@ pub(super) fn decode(
         .map_err(|error| format!("无法读取基岩版结构。{error}"))?;
     add_region_blocks(&schematic.default_region, origin, blocks)?;
     // A Bedrock dry block and a waterlogged block share a palette entry.
-    for (pos, state) in blocks {
+    for PlacedBlock { pos, state, .. } in blocks.values_mut() {
         let local = std::array::from_fn(|axis| pos[axis] - origin[axis]);
         if waterlogged.contains(&block_index(local, size)) {
             state.properties.insert("waterlogged".into(), "true".into());

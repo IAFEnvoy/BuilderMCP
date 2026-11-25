@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { gunzipSync } from 'fflate';
 import { dataVersionFor } from '../src/minecraft-versions.js';
+import { defaultJigsaw } from '../src/block-entities.js';
 import { readNbt } from '../src/nbt.js';
 import { BuildScene } from '../src/scene.js';
 import { decodeStructure, encodeStructure } from '../src/structure.js';
@@ -97,5 +98,33 @@ test('browser exports record the software version and unique placed block namesp
     const root = await readNbt(encodeStructure(project, format, { softwareVersion: '1.2.3' }));
     assert.equal(root.BuilderMCP.SoftwareVersion, '1.2.3');
     assert.deepEqual(root.BuilderMCP.BlockNamespaces, ['create', 'example']);
+  }
+});
+test('Java structure formats retain per-block banner layers and jigsaw settings', async () => {
+  const banner = { name: 'minecraft:red_wall_banner', properties: { facing: 'north' } };
+  const jigsaw = { name: 'minecraft:jigsaw', properties: { orientation: 'up_north' } };
+  const project = {
+    version: 1, name: 'Fixture', dataVersion: 3955,
+    blocks: [
+      { pos: [2, 1, 0], state: banner, blockEntity: { patterns: [{ pattern: 'minecraft:stripe_top', color: 'blue' }] } },
+      { pos: [3, 1, 0], state: banner, blockEntity: { patterns: [{ pattern: 'minecraft:rhombus', color: 'yellow' }] } },
+      { pos: [4, 2, 0], state: jigsaw, blockEntity: { ...defaultJigsaw(jigsaw), pool: 'fixture:hall', selection_priority: 2 } },
+    ],
+  };
+  for (const dataVersion of [3465, 3955, 5023]) {
+    for (const format of ['nbt', 'litematic']) {
+      const expected = { ...project, dataVersion };
+      const encoded = encodeStructure(expected, format, { preserveOrigin: true });
+      assert.deepEqual(await decodeStructure(encoded, format, project.name), expected);
+      const tags = await readNbt(encoded);
+      const bannerTag = format === 'nbt' ? tags.blocks[0].nbt : tags.Regions.Main.TileEntities[0];
+      if (dataVersion < 3837) {
+        assert.equal(bannerTag.Patterns[0].Pattern, 'ts');
+        assert.equal(bannerTag.Patterns[0].Color, 11);
+      } else {
+        assert.equal(bannerTag.patterns[0].pattern, 'minecraft:stripe_top');
+        assert.equal(bannerTag.patterns[0].color, 'blue');
+      }
+    }
   }
 });
