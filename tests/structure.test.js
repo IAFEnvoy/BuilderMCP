@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { gunzipSync } from 'fflate';
+import { dataVersionFor } from '../src/minecraft-versions.js';
+import { readNbt } from '../src/nbt.js';
 import { BuildScene } from '../src/scene.js';
 import { decodeStructure, encodeStructure } from '../src/structure.js';
 
@@ -64,4 +66,24 @@ test('direct saves retain the Litematica origin and only translate negative axes
   for (const format of ['nbt', 'litematic']) {
     assert.deepEqual(await decodeStructure(encodeStructure(empty, format, options), format, empty.name), empty);
   }
+});
+
+test('browser exports use the selected release for the palette and schematic version', async () => {
+  const blocks = [{ pos: [0, 0, 0], state: { name: 'minecraft:furnace', properties: { facing: 'east' } } }];
+  const project = { version: 1, name: 'Fixture', dataVersion: dataVersionFor('26.3'), blocks };
+  const nbt = await readNbt(encodeStructure(project, 'nbt'));
+  assert.equal(nbt.DataVersion, 5023);
+  assert.equal(nbt.palette[0].id, 'minecraft:furnace');
+  assert.equal(nbt.palette[0].properties.facing, 'east');
+
+  const projection = await readNbt(encodeStructure(project, 'litematic'));
+  assert.equal(projection.MinecraftDataVersion, 5023);
+  assert.equal(projection.Version, 7);
+  assert.equal(projection.Regions.Main.BlockStatePalette[1].id, 'minecraft:furnace');
+
+  const legacy = await readNbt(encodeStructure({ ...project, dataVersion: dataVersionFor('1.12.2') }, 'litematic'));
+  assert.equal(legacy.MinecraftDataVersion, 1343);
+  assert.equal(legacy.Version, 4);
+  assert.equal(legacy.Metadata.TotalBlocks, 1n);
+  assert.equal(legacy.Regions.Main.BlockStatePalette[1].Name, 'minecraft:furnace');
 });

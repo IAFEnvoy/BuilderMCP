@@ -14,21 +14,22 @@
   },
   "tools": [
     {
-      "name": "get_scene", "description": "Read the current project name, file path and format, whether it has unsaved edits, Java DataVersion, bounds, block and selection counts, camera, and globally installed resource packs.",
+      "name": "get_scene", "description": "Read the current project name, file path and format, whether it has unsaved edits, the Minecraft Java release if known, DataVersion, bounds, block and selection counts, camera, and globally installed resource packs.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false }
     },
     {
-      "name": "new_project", "description": "Start a new empty project in the editor. Returns its name, DataVersion and block count.",
+      "name": "new_project", "description": "Start a new empty project in the editor. Returns its name, the Minecraft Java release if known, DataVersion and block count.",
       "annotations": { "destructiveHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
         "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "data_version": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Minecraft Java DataVersion. Defaults to the current project's version." },
+        "minecraft_version": { "type": "string", "description": "Minecraft Java release, e.g. 1.21.1 or 26.3. Takes precedence over data_version. Defaults to the current project if neither is supplied." },
+        "data_version": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "Legacy numeric Minecraft Java DataVersion. Prefer minecraft_version." },
         "discard_unsaved": { "$ref": "#/$defs/discard" }
       } }
     },
     {
-      "name": "open_project", "description": "Open a Minecraft Java .nbt structure or .litematic file as the active project without showing a file picker. Returns the file path, format, DataVersion and block count.",
+      "name": "open_project", "description": "Open a Minecraft Java .nbt structure or .litematic file as the active project without showing a file picker. Returns the file path, format, the Minecraft Java release if known, DataVersion and block count.",
       "annotations": { "destructiveHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": {
         "path": { "type": "string", "minLength": 1, "description": "Absolute file path on the machine running Builder MCP." },

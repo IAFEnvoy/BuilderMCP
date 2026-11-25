@@ -12,6 +12,7 @@ import {
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, LOCALE_KEY, localeName, normalizeLocale } from './locales.js';
+import { dataVersionFor, minecraftVersionFor, MINECRAFT_RELEASES } from './minecraft-versions.js';
 import { ModelPreview } from './model-preview.js';
 import { BlockCatalog, loadArchive } from './resource-pack.js';
 import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint, STRUCTURE_FORMATS } from './scene.js';
@@ -274,7 +275,7 @@ function updateScene(change = {}) {
     byId('redo').disabled = !build.future.length;
     byId('scene-count').textContent = build.blocks.size.toLocaleString();
     byId('scene-bounds').textContent = build.bounds?.size.join(' × ') ?? '—';
-    byId('data-version').textContent = build.dataVersion;
+    byId('minecraft-version').textContent = minecraftVersionFor(build.dataVersion) ?? '未知版本';
     byId('select-all').disabled = !build.blocks.size;
   }
   byId('selection-count').textContent = build.selection.size.toLocaleString();
@@ -425,7 +426,8 @@ async function guardWindowClose() {
 
 function projectInfo() {
   return {
-    name: build.name, dataVersion: build.dataVersion, blockCount: build.blocks.size,
+    name: build.name, minecraftVersion: minecraftVersionFor(build.dataVersion),
+    dataVersion: build.dataVersion, blockCount: build.blocks.size,
     path: currentFile?.path ?? null, format: currentFile?.format ?? null,
     dirty: isProjectDirty(),
   };
@@ -793,7 +795,13 @@ async function loadPacks() {
 
 function projectSettings() {
   byId('edit-name').value = build.name;
-  byId('edit-data-version').value = build.dataVersion;
+  const versions = byId('edit-minecraft-version');
+  const currentVersion = minecraftVersionFor(build.dataVersion);
+  const currentValue = currentVersion ?? String(build.dataVersion);
+  const options = MINECRAFT_RELEASES.map(([version]) => new Option(version, version));
+  if (!currentVersion) options.unshift(new Option('保留原版本', currentValue));
+  versions.replaceChildren(...options);
+  versions.value = currentValue;
   byId('project-dialog').showModal();
 }
 
@@ -928,7 +936,8 @@ byId('transform').addEventListener('submit', event => {
 byId('project-form').addEventListener('submit', event => {
   event.preventDefault();
   try {
-    build.setMetadata(byId('edit-name').value, byId('edit-data-version').valueAsNumber);
+    const version = byId('edit-minecraft-version').value;
+    build.setMetadata(byId('edit-name').value, dataVersionFor(version) ?? Number(version));
     byId('project-dialog').close();
   } catch (error) { handleError(error); }
 });
@@ -1064,9 +1073,13 @@ if (desktop) {
       projectInfo,
       applyHistory,
       copySelection,
-      newProject: ({ name, data_version, discard_unsaved }) => projectAction(() => {
+      newProject: ({ name, minecraft_version, data_version, discard_unsaved }) => projectAction(() => {
         requireSavedProject(discard_unsaved);
-        return newProject(name, data_version);
+        const dataVersion = minecraft_version === undefined ? data_version : dataVersionFor(minecraft_version);
+        if (minecraft_version !== undefined && dataVersion === undefined) {
+          throw new Error('Choose a supported Minecraft Java release, e.g. 1.21.1.');
+        }
+        return newProject(name, dataVersion);
       }),
       openProject: ({ path, discard_unsaved }) => projectAction(async () => {
         requireSavedProject(discard_unsaved);

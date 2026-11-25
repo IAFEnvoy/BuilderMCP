@@ -1,4 +1,6 @@
-export const DEFAULT_DATA_VERSION = 3955; // Java Edition 1.21.1
+import { dataVersionFor } from './minecraft-versions.js';
+
+export const DEFAULT_DATA_VERSION = dataVersionFor('1.21.1');
 export const STRUCTURE_FORMATS = ['nbt', 'litematic'];
 export const MAX_BLOCKS = 200_000;
 export const MAX_COORDINATE = 1_000_000;

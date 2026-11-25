@@ -69,11 +69,11 @@ class NbtWriter {
   finish() { return gzipSync(new Uint8Array(this.buffer, 0, this.offset)); }
 }
 
-function paletteEntry(state) {
+function paletteEntry(state, usesModernKeys) {
   return nbt => {
-    nbt.tag('string', 'Name', state.name);
+    nbt.tag('string', usesModernKeys ? 'id' : 'Name', state.name);
     if (state.properties) {
-      nbt.tag('compound', 'Properties', properties => {
+      nbt.tag('compound', usesModernKeys ? 'properties' : 'Properties', properties => {
         for (const [key, value] of Object.entries(state.properties)) properties.tag('string', key, value);
       });
     }
@@ -90,6 +90,13 @@ function writeEmptyLists(nbt, names) {
   for (const name of names) nbt.tag('list', name, { type: 'compound', items: [] });
 }
 
+function litematicVersionFor(dataVersion) {
+  // Match Nucleation's format versions for the desktop writer.
+  if (dataVersion >= 3837) return 7;
+  if (dataVersion >= 2860) return 6;
+  return dataVersion >= 1631 ? 5 : 4;
+}
+
 export function encodeStructure(project, format, { preserveOrigin = false } = {}) {
   if (!STRUCTURE_FORMATS.includes(format)) throw new Error('未知结构格式。');
   const bounds = boundsOf(project.blocks) ?? { min: [0, 0, 0], max: [0, 0, 0] };
@@ -99,6 +106,7 @@ export function encodeStructure(project, format, { preserveOrigin = false } = {}
   const size = bounds.max.map((n, axis) => n - offset[axis] + 1);
   const [width, height, depth] = size;
   const volume = width * height * depth;
+  const { dataVersion } = project;
   if (litematic && volume > MAX_LITEMATIC_VOLUME) throw new Error('投影的包围盒超过 1600 万格。');
 
   const palette = litematic ? [{ name: 'minecraft:air' }] : [];
@@ -112,13 +120,15 @@ export function encodeStructure(project, format, { preserveOrigin = false } = {}
     }
     return { pos: pos.map((n, i) => n - offset[i]), index: indices.get(key) };
   });
+  // Java 26.3 renamed the block state keys starting at DataVersion 5006.
+  const paletteEntries = palette.map(state => paletteEntry(state, dataVersion >= 5006));
 
   const writer = new NbtWriter();
   writer.tag('compound', '', nbt => {
     if (!litematic) {
-      nbt.tag('int', 'DataVersion', project.dataVersion);
+      nbt.tag('int', 'DataVersion', dataVersion);
       nbt.tag('list', 'size', { type: 'int', items: size });
-      nbt.tag('list', 'palette', { type: 'compound', items: palette.map(paletteEntry) });
+      nbt.tag('list', 'palette', { type: 'compound', items: paletteEntries });
       nbt.tag('list', 'blocks', {
         type: 'compound', items: relative.map(({ pos, index }) => block => {
           block.tag('list', 'pos', { type: 'int', items: pos });
@@ -138,9 +148,10 @@ export function encodeStructure(project, format, { preserveOrigin = false } = {}
       words[word] |= index << shift;
       if (shift + bits > 32) words[word + 1] |= index >>> (32 - shift);
     }
-    nbt.tag('int', 'Version', 6);
-    nbt.tag('int', 'SubVersion', 1);
-    nbt.tag('int', 'MinecraftDataVersion', project.dataVersion);
+    const version = litematicVersionFor(dataVersion);
+    nbt.tag('int', 'Version', version);
+    if (dataVersion >= 3120) nbt.tag('int', 'SubVersion', 1);
+    nbt.tag('int', 'MinecraftDataVersion', dataVersion);
     nbt.tag('compound', 'Metadata', meta => {
       const now = Date.now();
       meta.tag('string', 'Name', project.name);
@@ -149,17 +160,19 @@ export function encodeStructure(project, format, { preserveOrigin = false } = {}
       meta.tag('long', 'TimeCreated', now);
       meta.tag('long', 'TimeModified', now);
       meta.tag('int', 'RegionCount', 1);
-      meta.tag('int', 'TotalBlocks', blocks.length);
-      meta.tag('int', 'TotalVolume', volume);
+      const countTag = version === 4 ? 'long' : 'int';
+      meta.tag(countTag, 'TotalBlocks', blocks.length);
+      meta.tag(countTag, 'TotalVolume', volume);
       writeVec(meta, 'EnclosingSize', size);
     });
     nbt.tag('compound', 'Regions', regions => {
       regions.tag('compound', 'Main', region => {
         writeVec(region, 'Position', preserveOrigin ? bounds.min : [0, 0, 0]);
         writeVec(region, 'Size', size);
-        region.tag('list', 'BlockStatePalette', { type: 'compound', items: palette.map(paletteEntry) });
+        region.tag('list', 'BlockStatePalette', { type: 'compound', items: paletteEntries });
         region.tag('longs', 'BlockStates', words);
-        writeEmptyLists(region, ['Entities', 'TileEntities', 'PendingBlockTicks', 'PendingFluidTicks']);
+        writeEmptyLists(region, ['Entities', 'TileEntities', 'PendingBlockTicks']);
+        if (version >= 5) writeEmptyLists(region, ['PendingFluidTicks']);
       });
     });
   });

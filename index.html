@@ -121,7 +121,7 @@
             <dl class="scene-stats">
               <div><dt>方块总数</dt><dd id="scene-count">0</dd></div>
               <div><dt>包围盒尺寸</dt><dd id="scene-bounds">—</dd></div>
-              <div><dt>DataVersion</dt><dd id="data-version">3955</dd></div>
+              <div><dt>Minecraft 版本</dt><dd id="minecraft-version">—</dd></div>
             </dl>
           </section>
         </div>
@@ -154,7 +154,10 @@
     <dialog id="project-dialog" class="dialog compact">
       <form id="project-form">
         <div class="dialog-header"><h2>项目设置</h2><button class="icon-button" type="button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
-        <div class="dialog-fields"><label>项目名称<input id="edit-name" maxlength="120" required /></label><label>Minecraft DataVersion<input id="edit-data-version" type="number" min="1" max="2147483647" required /></label></div>
+        <div class="dialog-fields">
+          <label>项目名称<input id="edit-name" maxlength="120" required /></label>
+          <label>Minecraft 版本<select id="edit-minecraft-version" required></select></label>
+        </div>
         <div class="dialog-actions"><button class="button quiet" type="button" data-close>取消</button><button class="button primary" type="submit">应用</button></div>
       </form>
     </dialog>

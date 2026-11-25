@@ -23,7 +23,8 @@ npm run tauri dev
 - 左键使用当前工具，中键拖动旋转视角，右键拖动平移，滚轮缩放。底部可输入铺设方块的工作层 Y 坐标。
 - 用选取工具点击方块，按住 Shift 多选。用区域选取或填充工具标记两个角点。检查器可移动选区原点、绕 Y 轴旋转 90°，或把选区缩放到三个轴的整数尺寸。
 - 选中方块后用 `Ctrl+C` 复制，按 `Ctrl+V` 显示粘贴预览，再点击视口放置。`Esc` 取消预览。粘贴以选区包围盒的最小角为原点，复制的方块会覆盖对应位置，空格会保留目标方块。整次粘贴可以撤销，剪贴板可在同一窗口内重复使用或跨项目使用。
-- 保存 `.litematic` 时保留场景坐标。保存 `.nbt` 时，有负坐标的轴会平移到从 0 开始。实体和方块实体的附加数据会跳过。项目设置默认使用 Minecraft Java 1.21.1 的 DataVersion 3955，可按目标游戏版本修改。
+- 保存 `.litematic` 时保留场景坐标。保存 `.nbt` 时，有负坐标的轴会平移到从 0 开始。实体和方块实体的附加数据会跳过。
+- 在项目设置选择目标 Minecraft Java 正式版，应用会将对应的数据版本写入结构文件。默认使用 1.21.1。导入文件的版本如果未收录，可在设置中选择「保留原版本」。[Minecraft Wiki 数据版本表](https://zh.minecraft.wiki/w/数据版本)
 
 ## 全局资源包
 
@@ -73,6 +74,8 @@ npm run tauri dev
 调用 `select_box` 和 `copy_selection` 后，向 `paste_selection` 传入目标 `origin` 即可放置副本。MCP 和编辑器共用剪贴板。
 
 流水化制作可以依次调用 `new_project`、放置方块和 `save_project`，再用 `open_project` 打开返回的路径。`open_project` 和 `save_project` 接受运行编辑器的机器上的绝对路径。省略保存路径时会更新当前文件，首次保存则在应用数据目录的 `exports` 下生成文件，默认使用 `.litematic`。
+
+`new_project` 可传 `"minecraft_version": "1.21.1"` 指定目标游戏版本。`get_scene`、`new_project` 和 `open_project` 返回可识别的 `minecraftVersion`。
 
 新建或打开会保留有未保存修改的场景，调用方可传 `discard_unsaved: true` 明确丢弃这些修改。向指定的已有路径保存时可传 `overwrite: true` 覆盖文件。`export_structure` 会在 `exports` 生成独立副本，并以建筑包围盒的最小坐标为局部原点。
 
