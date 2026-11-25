@@ -2,7 +2,7 @@
   "$defs": {
     "cell": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": -1000000, "maximum": 1000000 }, "description": "Minecraft [x, y, z] cell. Y points up, +X east, +Z south." },
     "vector": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" }, "description": "[x, y, z] in viewport world units." },
-    "format": { "enum": ["nbt", "litematic"] },
+    "format": { "enum": ["nbt", "litematic", "mcstructure"] },
     "discard": { "type": "boolean", "default": false, "description": "Allow replacing the scene if it contains unsaved edits." },
     "size": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer", "minimum": 1, "maximum": 1000000 }, "description": "Width, height and depth in blocks." },
     "state": { "anyOf": [
@@ -29,7 +29,7 @@
       } }
     },
     {
-      "name": "open_project", "description": "Open a Minecraft Java .nbt structure or .litematic file as the active project without showing a file picker. Returns the file path, format, the Minecraft Java release if known, DataVersion and block count.",
+      "name": "open_project", "description": "Open a Java .nbt structure, .litematic schematic or Bedrock .mcstructure file as the active project without showing a file picker. Returns the file path, format, Java export version and DataVersion, and block count.",
       "annotations": { "destructiveHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": {
         "path": { "type": "string", "minLength": 1, "description": "Absolute file path on the machine running Builder MCP." },
@@ -37,7 +37,7 @@
       } }
     },
     {
-      "name": "save_project", "description": "Save the active project as .nbt or .litematic without showing a file picker. With no path, update the active file when its format matches, or create a file in the app's exports directory. Returns the saved path, format, byte size and block count.",
+      "name": "save_project", "description": "Save the active project as .nbt, .litematic or Bedrock .mcstructure without showing a file picker. With no path, update the active file when its format matches, or create a file in the app's exports directory. Returns the saved path, format, byte size and block count.",
       "annotations": { "destructiveHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
         "path": { "type": "string", "minLength": 1, "description": "Absolute destination path on the machine running Builder MCP. Its extension selects the default format." },
@@ -148,9 +148,9 @@
       } }
     },
     {
-      "name": "export_structure", "description": "Export the current project to a gzip-compressed Minecraft Java structure NBT or Litematica file. Returns the local absolute path saved under the app's exports directory.",
+      "name": "export_structure", "description": "Export a copy of the current project as .nbt, .litematic or Bedrock .mcstructure with its minimum corner at [0,0,0]. Returns the local absolute path under the app's exports directory.",
       "annotations": { "destructiveHint": false, "openWorldHint": false },
-      "inputSchema": { "type": "object", "required": ["format"], "additionalProperties": false, "properties": { "format": { "enum": ["nbt", "litematic"] } } }
+      "inputSchema": { "type": "object", "required": ["format"], "additionalProperties": false, "properties": { "format": { "$ref": "#/$defs/format" } } }
     }
   ]
 }

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { boxBetween, boundsOf, MAX_COORDINATE } from './scene.js';
 import { applyTexture, buildGeometry, materialKey, tintFor } from './model-geometry.js';
+import { createTexturePlayer } from './texture-animation.js';
 
 const Y_UP = new THREE.Vector3(0, 1, 0);
 const ZERO = new THREE.Vector3();
@@ -114,6 +115,8 @@ export class Viewport {
     this.views = new Map();
     this.models = new Map();
     this.materials = new Map();
+    this.textures = new Map();
+    this.animatedTextures = new Set();
     this.layer = 0;
     this.raycaster = new THREE.Raycaster();
     this.floor = new THREE.Plane(Y_UP, 0);
@@ -162,12 +165,37 @@ export class Viewport {
   }
 
   invalidate() {
+    this.viewDirty = true;
+    this.requestFrame();
+  }
+
+  requestFrame() {
     if (this.nextFrame) return;
-    this.nextFrame = requestAnimationFrame(() => {
+    this.nextFrame = requestAnimationFrame(now => {
       this.nextFrame = null;
-      if (this.samplePointer && !this.dragging) this.callbacks.hover?.(this.pick(...this.samplePointer));
-      this.render();
+      const changed = this.advanceTextures(now);
+      if (this.viewDirty) {
+        this.viewDirty = false;
+        if (this.samplePointer && !this.dragging) this.callbacks.hover?.(this.pick(...this.samplePointer));
+        this.render();
+      } else if (changed) {
+        this.renderer.render(this.world, this.camera);
+      }
+      if (this.animatedTextures.size) this.requestFrame();
     });
+  }
+
+  advanceTextures(now) {
+    if (!this.animatedTextures.size) return false;
+    const tick = this.catalog.animationTick(now);
+    let changed = false;
+    for (const { texture, player } of this.animatedTextures) {
+      if (player.update(tick)) {
+        texture.needsUpdate = true;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   updateClippingPlanes(distance = this.controls.getDistance()) {
@@ -199,12 +227,11 @@ export class Viewport {
     this.catalog = catalog;
     this.clearViews();
     for (const geometries of this.models.values()) for (const { geometry } of geometries) geometry.dispose();
-    for (const { material, texture } of this.materials.values()) {
-      material.dispose();
-      texture.dispose();
-    }
+    for (const { material } of this.materials.values()) material.dispose();
+    for (const { texture } of this.textures.values()) texture.dispose();
     this.models.clear();
     this.materials.clear();
+    this.textures.clear();
     this.rebuild();
   }
 
@@ -233,7 +260,11 @@ export class Viewport {
   }
 
   disposeView(view) {
-    for (const mesh of view.children) mesh.dispose();
+    for (const mesh of view.children) {
+      const source = mesh.userData.textureSource;
+      if (--source.users === 0) this.animatedTextures.delete(source);
+      mesh.dispose();
+    }
     this.group.remove(view);
   }
 
@@ -268,9 +299,13 @@ export class Viewport {
       if (!this.models.has(id)) this.models.set(id, buildGeometry(this.catalog, part, tint));
       const matrix = new THREE.Matrix4();
       for (const batch of this.models.get(id)) {
-        const mesh = new THREE.InstancedMesh(batch.geometry, this.material(batch), cells.length);
+        const { material, source } = this.material(batch);
+        source.users++;
+        if (source.player) this.animatedTextures.add(source);
+        const mesh = new THREE.InstancedMesh(batch.geometry, material, cells.length);
         cells.forEach((pos, index) => mesh.setMatrixAt(index, matrix.makeTranslation(...pos)));
         mesh.userData.cells = cells;
+        mesh.userData.textureSource = source;
         view.add(mesh);
       }
     }
@@ -280,23 +315,40 @@ export class Viewport {
 
   material(batch) {
     const key = materialKey(batch);
-    if (this.materials.has(key)) return this.materials.get(key).material;
+    if (this.materials.has(key)) return this.materials.get(key);
+    const source = this.textureSource(batch.texture);
+    const material = new THREE.MeshBasicMaterial({ visible: false, vertexColors: true });
+    const entry = { material, source, texture: source.texture, forceTranslucent: batch.forceTranslucent };
+    entry.ready = source.ready.then(image => {
+      if (!image || this.materials.get(key) !== entry) return;
+      applyTexture(entry, { ...image, image: source.player?.image ?? image.image });
+      material.visible = true;
+      if (source.users) this.invalidate();
+    });
+    this.materials.set(key, entry);
+    return entry;
+  }
+
+  textureSource(key) {
+    if (this.textures.has(key)) return this.textures.get(key);
     const catalog = this.catalog;
     const texture = new THREE.CanvasTexture();
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.magFilter = THREE.NearestFilter;
     texture.minFilter = THREE.NearestMipmapLinearFilter;
     texture.anisotropy = Math.min(this.renderer.capabilities.getMaxAnisotropy(), 4);
-    const material = new THREE.MeshBasicMaterial({ visible: false, vertexColors: true });
-    const entry = { material, texture, forceTranslucent: batch.forceTranslucent };
-    const ready = catalog.textureImage(batch.texture).then(image => {
-      if (catalog !== this.catalog) return;
-      applyTexture(entry, image);
-      material.visible = true;
-      this.invalidate();
+    const source = { texture, users: 0, player: null };
+    source.ready = catalog.textureImage(key).then(image => {
+      if (this.textures.get(key) !== source) return null;
+      if (image.animation) {
+        source.player = createTexturePlayer(image.animation);
+        source.player.update(catalog.animationTick());
+        if (source.users) this.animatedTextures.add(source);
+      }
+      return image;
     });
-    this.materials.set(key, { ...entry, ready });
-    return material;
+    this.textures.set(key, source);
+    return source;
   }
 
   updateSelection() {
@@ -439,6 +491,7 @@ export class Viewport {
   async capture(maxWidth = 1440, { transparent = false } = {}) {
     if (!Number.isInteger(maxWidth) || maxWidth < 256 || maxWidth > 1920) throw new Error('截图宽度需要是 256 至 1920 的整数。');
     await Promise.all([...this.materials.values()].map(({ ready }) => ready));
+    this.advanceTextures();
     if (transparent) return this.captureBuilding(maxWidth);
     this.hoverOutline.visible = false;
     this.render();

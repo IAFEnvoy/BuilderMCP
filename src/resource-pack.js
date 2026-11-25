@@ -1,6 +1,7 @@
 import { strFromU8, unzip } from 'fflate';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, normalizeLocale } from './locales.js';
 import { isAir, stateOf } from './scene.js';
+import { decodeTexture, TEXTURE_TICK_MS } from './texture-animation.js';
 
 const assetPath = /^(?:[^/]+\/)*?assets\/([a-z0-9_.-]+)\/(blockstates|models|items|textures|lang)\/(.+)$/;
 const MAX_EXPANDED_BYTES = 384 * 1024 * 1024;
@@ -233,38 +234,9 @@ function chooseWeighted(value, pos, salt) {
   return candidates.find(entry => (bucket -= weight(entry)) < 0);
 }
 
-async function decodeTexture(bytes, animation) {
-  if (bytes.length < 24) throw new Error('纹理格式无效。');
-  const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const width = header.getUint32(16);
-  const height = header.getUint32(20);
-  if (width > 8192 || height > 8192 || width * height > 33_554_432) throw new Error('纹理尺寸过大。');
-
-  const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-  try {
-    const frameWidth = animation ? (animation.width ?? (animation.height ? width : Math.min(width, height))) : width;
-    const frameHeight = animation ? (animation.height ?? (animation.width ? height : Math.min(width, height))) : height;
-    if (![frameWidth, frameHeight].every(n => Number.isInteger(n) && n >= 1) || frameWidth > width || frameHeight > height) throw new Error('纹理帧尺寸无效。');
-    const first = animation?.frames?.[0];
-    const index = Number.isSafeInteger(first?.index ?? first) ? first?.index ?? first : 0;
-    const columns = Math.floor(width / frameWidth);
-    const canvas = document.createElement('canvas');
-    canvas.width = frameWidth;
-    canvas.height = frameHeight;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    const frame = index >= 0 && index < columns * Math.floor(height / frameHeight) ? index : 0;
-    context.drawImage(bitmap, (frame % columns) * frameWidth, Math.floor(frame / columns) * frameHeight, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight);
-    const data = context.getImageData(0, 0, frameWidth, frameHeight).data;
-    let translucent = false;
-    for (let i = 3; i < data.length; i += 4) {
-      if (data[i] > 0 && data[i] < 255) { translucent = true; break; }
-    }
-    return { image: canvas, translucent };
-  } finally { bitmap.close(); }
-}
-
 export class BlockCatalog {
   #blocksByNamespace = new Map();
+  #animationStart = performance.now();
 
   constructor(packs = [], locale = DEFAULT_LOCALE, officialLanguages = new Map()) {
     this.states = new Map();
@@ -451,6 +423,10 @@ export class BlockCatalog {
       this.images.set(key, decodeTexture(resource.bytes, resource.animation).catch(() => null));
     }
     return this.images.get(key);
+  }
+
+  animationTick(now = performance.now()) {
+    return Math.max(0, Math.floor((now - this.#animationStart) / TEXTURE_TICK_MS));
   }
 
   async textureImage(key) {

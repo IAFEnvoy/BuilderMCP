@@ -39,7 +39,8 @@ fn structure_format(path: &Path) -> Result<StructureFormat, String> {
     {
         Some("nbt") => Ok(StructureFormat::Nbt),
         Some("litematic") => Ok(StructureFormat::Litematic),
-        _ => Err("Choose a .nbt or .litematic file.".into()),
+        Some("mcstructure") => Ok(StructureFormat::Mcstructure),
+        _ => Err("Choose a .nbt, .litematic, or .mcstructure file.".into()),
     }
 }
 

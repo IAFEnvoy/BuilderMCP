@@ -24,6 +24,11 @@ async fn list_resource_packs(store: State<'_, PackStore>) -> Result<Vec<PackInfo
 }
 
 #[tauri::command]
+async fn list_resource_pack_archives(path: PathBuf) -> Result<Vec<PathBuf>, String> {
+    file_io(move || packs::list_archives(&path)).await
+}
+
+#[tauri::command]
 async fn set_resource_pack_order(
     store: State<'_, PackStore>,
     ids: Vec<String>,
@@ -71,6 +76,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_resource_packs,
+            list_resource_pack_archives,
             set_resource_pack_order,
             import_resource_pack,
             read_resource_pack,

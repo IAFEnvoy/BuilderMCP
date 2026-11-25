@@ -1,6 +1,6 @@
 import { gzipSync } from 'fflate';
 import { readNbt, TAG } from './nbt.js';
-import { boundsOf, cellKey, emptyProject, isAir, MAX_BLOCKS, point, stateKey, stateOf, STRUCTURE_FORMATS } from './scene.js';
+import { boundsOf, cellKey, emptyProject, isAir, JAVA_STRUCTURE_FORMATS, MAX_BLOCKS, point, stateKey, stateOf } from './scene.js';
 
 const MAX_LITEMATIC_VOLUME = 16_000_000;
 
@@ -97,8 +97,8 @@ function litematicVersionFor(dataVersion) {
   return dataVersion >= 1631 ? 5 : 4;
 }
 
-export function encodeStructure(project, format, { preserveOrigin = false } = {}) {
-  if (!STRUCTURE_FORMATS.includes(format)) throw new Error('未知结构格式。');
+export function encodeStructure(project, format, { preserveOrigin = false, softwareVersion } = {}) {
+  if (!JAVA_STRUCTURE_FORMATS.includes(format)) throw new Error('未知结构格式。');
   const bounds = boundsOf(project.blocks) ?? { min: [0, 0, 0], max: [0, 0, 0] };
   const litematic = format === 'litematic';
   // Java structure positions are nonnegative. Litematica can store the region origin separately.
@@ -122,9 +122,18 @@ export function encodeStructure(project, format, { preserveOrigin = false } = {}
   });
   // Java 26.3 renamed the block state keys starting at DataVersion 5006.
   const paletteEntries = palette.map(state => paletteEntry(state, dataVersion >= 5006));
+  const namespaces = new Set();
+  for (const state of palette) {
+    const name = state.name.includes(':') ? state.name : `minecraft:${state.name}`;
+    if (!isAir(name)) namespaces.add(name.split(':', 1)[0]);
+  }
 
   const writer = new NbtWriter();
   writer.tag('compound', '', nbt => {
+    nbt.tag('compound', 'BuilderMCP', metadata => {
+      if (softwareVersion !== undefined) metadata.tag('string', 'SoftwareVersion', softwareVersion);
+      metadata.tag('list', 'BlockNamespaces', { type: 'string', items: [...namespaces].sort() });
+    });
     if (!litematic) {
       nbt.tag('int', 'DataVersion', dataVersion);
       nbt.tag('list', 'size', { type: 'int', items: size });
@@ -267,7 +276,7 @@ function readLitematicBlocks(root, blocks) {
 }
 
 export async function decodeStructure(bytes, format, filename) {
-  if (!STRUCTURE_FORMATS.includes(format)) throw new Error('未知结构格式。');
+  if (!JAVA_STRUCTURE_FORMATS.includes(format)) throw new Error('未知结构格式。');
   const root = await readNbt(bytes);
   const litematic = format === 'litematic';
   const dataVersion = litematic ? root.MinecraftDataVersion : root.DataVersion;

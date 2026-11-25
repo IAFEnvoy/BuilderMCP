@@ -1,41 +1,43 @@
 import {
-  ArrowDown, ArrowUp, Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, ClipboardPaste, Copy, Cuboid,
-  Download, Eraser, FileBox, FilePlus, FolderOpen, Grid3x3, ImageDown, Languages, Layers, Mouse, MousePointer2,
-  Move3d, Package, PackagePlus, PaintBucket, Pipette, Plus, Redo2, RotateCcw, RotateCw,
+  Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, ClipboardPaste, Copy, Cuboid,
+  Download, Eraser, FileBox, FilePlus, FolderArchive, FolderOpen, Grid3x3, GripVertical, ImageDown, Languages, Layers, Mouse, MousePointer2,
+  Move3d, Package, PackagePlus, PaintBucket, Pipette, Plus, Redo2, Replace, RotateCcw, RotateCw,
   Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
 } from 'lucide';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import Sortable from 'sortablejs';
 import './styles.css';
 import {
   connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, openProject, PACK_ARCHIVE_FORMATS,
-  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureAs, saveStructureFile, structureFileInfo,
+  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, LOCALE_KEY, localeName, normalizeLocale } from './locales.js';
 import { dataVersionFor, minecraftVersionFor, MINECRAFT_RELEASES } from './minecraft-versions.js';
 import { ModelPreview } from './model-preview.js';
 import { BlockCatalog, loadArchive } from './resource-pack.js';
-import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint, STRUCTURE_FORMATS } from './scene.js';
+import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint } from './scene.js';
 import { DEFAULT_CAMERA_PRESET, drawCompass, Viewport } from './viewport.js';
 
 const byId = id => document.getElementById(id);
 const modIdFilter = byId('block-mod-id');
 const unsavedDialog = byId('unsaved-dialog');
+const packList = byId('pack-list');
 const packImportButtons = document.querySelectorAll('[data-pack-type]');
 const packProgressPanels = document.querySelectorAll('[data-pack-progress]');
 const toolButtons = document.querySelectorAll('[data-tool]');
 const projectionButtons = document.querySelectorAll('[data-projection]');
 const presetButtons = document.querySelectorAll('[data-preset]');
-const brushTools = new Set(['place', 'fill']);
+const brushTools = new Set(['place', 'replace', 'fill']);
 const PALETTE_PAGE_SIZE = 120;
 const modelPreview = new ModelPreview();
 const icons = {
-  'arrow-down': ArrowDown, 'arrow-up': ArrowUp,
   box: Box, boxes: Boxes, 'box-select': BoxSelect, camera: Camera, check: Check, 'chevron-down': ChevronDown,
   'circle-alert': CircleAlert, 'circle-help': CircleHelp, 'clipboard-paste': ClipboardPaste, copy: Copy, cuboid: Cuboid, download: Download,
-  eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-open': FolderOpen, 'grid-3x3': Grid3x3, 'image-down': ImageDown,
+  eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-archive': FolderArchive, 'folder-open': FolderOpen,
+  'grid-3x3': Grid3x3, 'grip-vertical': GripVertical, 'image-down': ImageDown,
   languages: Languages, layers: Layers, mouse: Mouse, 'mouse-pointer-2': MousePointer2, 'move-3d': Move3d, package: Package,
-  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, plus: Plus, 'redo-2': Redo2,
+  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, plus: Plus, 'redo-2': Redo2, replace: Replace,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
   'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
   'trash-2': Trash2, 'undo-2': Undo2, x: X,
@@ -49,6 +51,11 @@ for (const element of document.querySelectorAll('[data-icon]')) {
   const svg = icon(element.dataset.icon);
   svg.setAttribute('class', element.className);
   element.replaceWith(svg);
+}
+
+for (const element of document.querySelectorAll('[data-desktop-format]')) {
+  element.hidden = !desktop;
+  element.disabled = !desktop;
 }
 
 const build = new BuildScene(emptyProject());
@@ -77,6 +84,7 @@ let toastTimer;
 const tools = {
   select: '点击选取，Shift + 点击多选',
   place: '点击放置方块',
+  replace: '点击已有方块替换，点击选区内的方块可替换整个选区',
   erase: '点击擦除方块',
   box: '点击区域选区的第一个角点',
   fill: '点击填充区域的第一个角点',
@@ -196,7 +204,6 @@ function renderBrush() {
   byId('brush-id').textContent = brush?.name ?? '';
   byId('brush-id').title = brush?.name ?? '';
   renderBrushThumbnail();
-  byId('paint-selection').disabled = !brush;
   for (const button of toolButtons) {
     if (brushTools.has(button.dataset.tool)) button.disabled = !brush;
   }
@@ -278,6 +285,7 @@ function updateScene(change = {}) {
     byId('scene-count').textContent = build.blocks.size.toLocaleString();
     byId('scene-bounds').textContent = build.bounds?.size.join(' × ') ?? '—';
     byId('minecraft-version').textContent = minecraftVersionFor(build.dataVersion) ?? '未知版本';
+    byId('edition').textContent = currentFile?.format === 'mcstructure' ? 'Minecraft Bedrock' : 'Minecraft Java';
     byId('select-all').disabled = !build.blocks.size;
     byId('export-image').disabled = !viewport || !build.blocks.size;
   }
@@ -368,6 +376,12 @@ function clickScene(hit, event) {
       return;
     }
     if (tool === 'place') build.setBlocks([{ pos: hit.place, state: brush }]);
+    if (tool === 'replace' && hit.cell) {
+      const changes = build.selection.has(cellKey(hit.cell))
+        ? build.paintSelection(brush)
+        : build.setBlocks([{ pos: hit.cell, state: brush }]);
+      status(changes ? `已替换 ${changes.toLocaleString()} 个方块` : '目标已是当前画笔状态');
+    }
     if (tool === 'erase' && hit.cell) build.setBlocks([{ pos: hit.cell, state: null }]);
     if (tool === 'pick' && hit.cell) {
       chooseBrush(build.blocks.get(cellKey(hit.cell)).state, true);
@@ -528,7 +542,7 @@ function saveProject(asFormat) {
 function saveMcpProject({ path, format, overwrite }) {
   return projectAction(() => {
     const explicitFile = path === undefined ? null : structureFileInfo(path);
-    if (format !== undefined && !STRUCTURE_FORMATS.includes(format)) throw new Error('Choose nbt or litematic.');
+    if (format !== undefined && !STRUCTURE_FORMATS.includes(format)) throw new Error(`Choose a format from ${STRUCTURE_FORMATS.join(', ')}.`);
     if (overwrite !== undefined && typeof overwrite !== 'boolean') throw new Error('overwrite must be a boolean.');
     const selectedFormat = format ?? explicitFile?.format ?? currentFile?.format ?? 'litematic';
     if (explicitFile && explicitFile.format !== selectedFormat) {
@@ -558,7 +572,6 @@ function updateCatalog() {
   if (modIdFilter.value !== selectedModId) resetPalette();
   else renderPalette(false);
   renderLanguages();
-  renderPacks();
   void loadOfficialLanguage();
 }
 
@@ -614,37 +627,71 @@ async function loadOfficialLanguage() {
   }
 }
 
-function packMoveButton(pack, step, atBoundary) {
-  const upward = step > 0;
-  const button = document.createElement('button');
-  button.className = 'icon-button small';
-  button.dataset.packMove = String(step);
-  button.disabled = packBusy || atBoundary;
-  button.title = (upward ? '上移 ' : '下移 ') + pack.name;
-  button.setAttribute('aria-label', button.title);
-  button.append(icon(upward ? 'arrow-up' : 'arrow-down'));
-  button.addEventListener('click', () => movePack(pack, step));
-  return button;
+const packMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const packSorter = Sortable.create(packList, {
+  draggable: '.pack-row',
+  handle: '.pack-handle',
+  dataIdAttr: 'data-pack-id',
+  direction: 'vertical',
+  // Use pointer dragging so Tauri's native file drop remains available.
+  forceFallback: true,
+  fallbackTolerance: 4,
+  ghostClass: 'pack-placeholder',
+  fallbackClass: 'pack-dragging',
+  animation: packMotion.matches ? 0 : 160,
+  easing: 'ease-out',
+  disabled: true,
+  onEnd({ item, oldDraggableIndex, newDraggableIndex }) {
+    if (!packBusy && oldDraggableIndex !== newDraggableIndex) {
+      void savePackOrder(packSorter.toArray(), item.dataset.packId);
+    }
+  },
+});
+packMotion.addEventListener('change', ({ matches }) => packSorter.option('animation', matches ? 0 : 160));
+
+function updatePackControls() {
+  const canSort = desktop && !packBusy && packs.size > 1;
+  packSorter.option('disabled', !canSort);
+  for (const button of packImportButtons) button.disabled = packBusy || !desktop;
+  for (const button of packList.querySelectorAll('.pack-remove')) button.disabled = packBusy;
+  for (const button of packList.querySelectorAll('.pack-handle')) button.disabled = !canSort;
 }
 
 function renderPacks() {
-  const list = byId('pack-list');
-  list.replaceChildren();
+  packList.replaceChildren();
   const active = [...packs.values()].filter(pack => pack.data).length;
   byId('pack-summary').textContent = active ? `${active} 个全局资源包` : '尚未加载资源包';
   byId('pack-manager').lastChild.textContent = packs.size ? '管理' : '导入';
-  for (const button of packImportButtons) button.disabled = packBusy || !desktop;
   if (!packs.size) {
     const message = document.createElement('p');
     message.className = 'palette-message';
     message.textContent = packBusy ? '正在读取资源包…' : desktop ? '尚未导入资源包' : '请在桌面应用中导入资源包';
-    list.append(message);
+    packList.append(message);
   }
   const displayedPacks = [...packs.values()].reverse();
-  for (const [index, pack] of displayedPacks.entries()) {
+  for (const pack of displayedPacks) {
     const row = document.createElement('div');
     row.className = 'pack-row';
-    row.id = `pack-${pack.id}`;
+    row.dataset.packId = pack.id;
+    const handle = document.createElement('button');
+    handle.className = 'icon-button small pack-handle';
+    handle.title = '拖动排序，也可使用方向键';
+    handle.setAttribute('aria-label', `调整 ${pack.name} 的顺序`);
+    handle.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+    handle.append(icon('grip-vertical'));
+    handle.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      if (packBusy || Sortable.active) return;
+      const ids = packSorter.toArray();
+      const from = ids.indexOf(pack.id);
+      const to = from + (event.key === 'ArrowUp' ? -1 : 1);
+      if (to < 0 || to >= ids.length) return;
+      ids.splice(from, 1);
+      ids.splice(to, 0, pack.id);
+      packSorter.sort(ids, true);
+      void savePackOrder(ids, pack.id);
+    });
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = pack.name;
@@ -661,8 +708,7 @@ function renderPacks() {
     if (pack.error) detail.title = pack.error;
     text.append(name, detail);
     const remove = document.createElement('button');
-    remove.className = 'icon-button small danger';
-    remove.disabled = packBusy;
+    remove.className = 'icon-button small danger pack-remove';
     remove.title = '移除 AppData 中的副本';
     remove.setAttribute('aria-label', `移除 ${pack.name}`);
     remove.append(icon('trash-2'));
@@ -672,14 +718,10 @@ function renderPacks() {
       updateCatalog();
       status(`已移除 ${pack.name}`);
     }));
-    row.append(
-      icon('package'), text,
-      packMoveButton(pack, 1, index === 0),
-      packMoveButton(pack, -1, index === displayedPacks.length - 1),
-      remove,
-    );
-    list.append(row);
+    row.append(handle, text, remove);
+    packList.append(row);
   }
+  updatePackControls();
 }
 
 for (const panel of packProgressPanels) panel.append(byId('pack-progress-template').content.cloneNode(true));
@@ -715,17 +757,17 @@ async function loadPack(pack, total, completed) {
   });
 }
 
-function packAction(action) {
-  const pending = packQueue.then(() => runPackAction(action));
+function packAction(action, refreshList = renderPacks) {
+  const pending = packQueue.then(() => runPackAction(action, refreshList));
   packQueue = pending.catch(handleError);
   return pending;
 }
 
-async function runPackAction(action) {
+async function runPackAction(action, refreshList) {
   packBusy = true;
   const message = byId('pack-error');
   message.hidden = true;
-  renderPacks();
+  updatePackControls();
   try { await action(); }
   catch (error) {
     message.textContent = errorMessage(error);
@@ -734,27 +776,28 @@ async function runPackAction(action) {
   } finally {
     packBusy = false;
     showPackProgress(null);
-    renderPacks();
+    refreshList();
   }
 }
 
-async function movePack(pack, step) {
-  await packAction(async () => {
-    const ids = [...packs.keys()];
-    const from = ids.indexOf(pack.id);
-    const to = from + step;
-    if (from < 0 || to < 0 || to >= ids.length) return;
-    [ids[from], ids[to]] = [ids[to], ids[from]];
+function savePackOrder(displayOrder, movedId) {
+  return packAction(async () => {
+    if (displayOrder.length !== packs.size || displayOrder.some(id => !packs.has(id))) return;
+    const ids = [...displayOrder].reverse();
     await packsOnDisk.setOrder(ids);
     packs = new Map(ids.map(id => [id, packs.get(id)]));
     updateCatalog();
-    status((step > 0 ? '已上移 ' : '已下移 ') + pack.name);
+    status(`已调整 ${packs.get(movedId).name} 的加载顺序`);
+  }, () => {
+    const savedOrder = [...packs.keys()].reverse();
+    if (packSorter.toArray().some((id, index) => id !== savedOrder[index])) {
+      packSorter.sort(savedOrder, true);
+    }
+    updatePackControls();
+    if (byId('pack-dialog').open) {
+      packList.querySelector(`[data-pack-id="${CSS.escape(movedId)}"] .pack-handle`)?.focus({ preventScroll: true });
+    }
   });
-  if (byId('pack-dialog').open) {
-    const row = byId(`pack-${pack.id}`);
-    const move = row?.querySelector(`[data-pack-move="${step}"]:enabled`) ?? row?.querySelector('[data-pack-move]:enabled');
-    move?.focus();
-  }
 }
 
 async function importPack(path, total, completed, name) {
@@ -873,14 +916,15 @@ async function openDroppedFiles(files) {
     }
   }
   if (unsupported.length) {
-    const formats = desktop ? '支持 ZIP、JAR、NBT 和 Litematic。' : '网页可打开 NBT 和 Litematic，资源包请在桌面应用导入。';
+    const formats = desktop ? '支持 ZIP、JAR、NBT、Litematic 和 MCStructure。' : '桌面应用可打开 MCStructure 和导入资源包。';
     handleError(new Error(`无法处理 ${unsupported.join('、')}。${formats}`));
   }
 }
 
 async function registerFileDrop() {
   const hint = byId('file-drop-hint');
-  byId('file-drop-formats').textContent = desktop ? '.zip / .jar · .nbt / .litematic' : '.nbt / .litematic';
+  const formats = STRUCTURE_FORMATS.map(format => '.' + format).join(' / ');
+  byId('file-drop-formats').textContent = desktop ? '.zip / .jar · ' + formats : formats;
   let queue = Promise.resolve();
   const drop = files => {
     hint.hidePopover();
@@ -993,7 +1037,6 @@ onClick('screenshot', () => saveViewportImage(false));
 onClick('export-image', () => saveViewportImage(true));
 onClick('select-all', () => { toggleTool('select'); build.select(build.blocks.keys()); });
 onClick('delete-selection', () => { if (build.removeSelection()) status('已删除选区'); });
-onClick('paint-selection', () => { if (build.paintSelection(brush)) status('已替换选区方块'); });
 onClick('pack-manager', () => { renderPacks(); byId('pack-dialog').showModal(); });
 for (const button of packImportButtons) {
   button.addEventListener('click', () => packAction(async () => {
@@ -1062,7 +1105,7 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (editing || event.altKey) return;
-  const shortcut = { v: 'select', p: 'place', e: 'erase', b: 'box', g: 'fill', i: 'pick' };
+  const shortcut = { v: 'select', p: 'place', r: 'replace', e: 'erase', b: 'box', g: 'fill', i: 'pick' };
   if (shortcut[key]) toggleTool(shortcut[key]);
   if (key === 'f') frame();
   if (key === 'delete') build.removeSelection();

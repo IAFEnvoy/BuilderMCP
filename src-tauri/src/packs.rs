@@ -37,6 +37,29 @@ enum PackKind {
     Folder,
 }
 
+impl PackKind {
+    fn archive(path: &Path) -> Option<Self> {
+        match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "zip" => Some(Self::Zip),
+            "jar" => Some(Self::Jar),
+            _ => None,
+        }
+    }
+}
+
+pub fn list_archives(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut archives = Vec::new();
+    for entry in fs::read_dir(directory).map_err(message)? {
+        let entry = entry.map_err(message)?;
+        let path = entry.path();
+        if PackKind::archive(&path).is_some() && entry.file_type().map_err(message)?.is_file() {
+            archives.push(path);
+        }
+    }
+    archives.sort_unstable();
+    Ok(archives)
+}
+
 impl PackStore {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
@@ -113,16 +136,7 @@ impl PackStore {
             }
             PackKind::Folder
         } else {
-            match source
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("zip") => PackKind::Zip,
-                Some("jar") => PackKind::Jar,
-                _ => return Err("请选择 ZIP、JAR 或资源包文件夹。".into()),
-            }
+            PackKind::archive(&source).ok_or("请选择 ZIP、JAR 或资源包文件夹。")?
         };
 
         let timestamp = SystemTime::now()
@@ -385,6 +399,21 @@ mod tests {
 
     const BLOCKSTATE: &str = "assets/fixture/blockstates/test_block.json";
     const JSON: &str = r#"{"variants":{"":{"model":"fixture:block/test_block"}}}"#;
+
+    #[test]
+    fn lists_zip_and_jar_files_in_the_selected_directory_in_filename_order() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["20-patch.JAR", "10-base.zip", "notes.txt"] {
+            fs::write(directory.path().join(name), []).unwrap();
+        }
+        let nested = directory.path().join("nested.zip");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("other.jar"), []).unwrap();
+        assert_eq!(
+            list_archives(directory.path()).unwrap(),
+            ["10-base.zip", "20-patch.JAR"].map(|name| directory.path().join(name))
+        );
+    }
 
     #[test]
     fn archive_copies_survive_source_removal_and_store_reopen() {

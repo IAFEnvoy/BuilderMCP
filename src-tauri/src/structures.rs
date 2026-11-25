@@ -4,7 +4,7 @@ use nucleation::{
     dataconverter::block_state_keys,
     formats::{
         limits::DecodeLimits,
-        litematic::{from_litematic_bounded, to_litematic},
+        litematic::{from_litematic_bounded, to_litematic_with_compression},
     },
     nbt::{
         Endian, NbtMap, NbtValue,
@@ -13,9 +13,11 @@ use nucleation::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
-    io::{BufWriter, Cursor, Read, Write},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io::{self, BufWriter, Cursor, Read, Write},
 };
+
+mod bedrock;
 
 pub const MAX_STRUCTURE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BLOCKS: usize = 200_000;
@@ -23,6 +25,7 @@ const MAX_COORDINATE: i32 = 1_000_000;
 const MAX_LITEMATIC_VOLUME: usize = 16_000_000;
 const DEFAULT_DATA_VERSION: i32 = 3955;
 const DEFAULT_NAME: &str = "未命名建筑";
+const BUILDER_METADATA_TAG: &str = "BuilderMCP";
 const NBT_LIMITS: NbtReadLimits = NbtReadLimits {
     max_depth: 128,
     max_string_bytes: u16::MAX as usize,
@@ -35,6 +38,7 @@ const NBT_LIMITS: NbtReadLimits = NbtReadLimits {
 pub enum StructureFormat {
     Nbt,
     Litematic,
+    Mcstructure,
 }
 
 impl StructureFormat {
@@ -42,6 +46,7 @@ impl StructureFormat {
         match self {
             Self::Nbt => "nbt",
             Self::Litematic => "litematic",
+            Self::Mcstructure => "mcstructure",
         }
     }
 }
@@ -81,6 +86,12 @@ impl SceneBlockState {
     fn validate(&self) -> Result<(), String> {
         let valid_char =
             |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c);
+        let property_path = |name: &str| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+        };
         let valid_id = self.name.split_once(':').is_some_and(|(namespace, path)| {
             !namespace.is_empty()
                 && !path.is_empty()
@@ -94,11 +105,17 @@ impl SceneBlockState {
             return Err("方块状态最多包含 32 个属性。".into());
         }
         for (key, value) in &self.properties {
-            if key.is_empty()
+            let valid_key = key.split_once(':').map_or_else(
+                || property_path(key),
+                |(namespace, path)| {
+                    !namespace.is_empty()
+                        && namespace.bytes().all(valid_char)
+                        && !path.is_empty()
+                        && path.bytes().all(valid_char)
+                },
+            );
+            if !valid_key
                 || key.len() > 64
-                || !key
-                    .bytes()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
                 || value.is_empty()
                 || value.len() > 64
                 || !value.bytes().all(valid_char)
@@ -121,6 +138,17 @@ impl SceneBlockState {
             self.properties
                 .iter()
                 .map(|(key, value)| (key.as_str().into(), value.as_str().into()))
+                .collect(),
+        )
+    }
+
+    fn from_nucleation(state: BlockState) -> Result<Self, String> {
+        Self::from_parts(
+            state.name.to_string(),
+            state
+                .properties
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
         )
     }
@@ -197,6 +225,30 @@ fn nbt_compound<const N: usize>(entries: [(&str, NbtValue); N]) -> NbtMap {
 
 fn nbt_vector(pos: [i32; 3]) -> NbtValue {
     NbtValue::List(pos.into_iter().map(NbtValue::Int).collect())
+}
+
+fn builder_metadata(blocks: &[&PlacedBlock]) -> NbtMap {
+    let namespaces: BTreeSet<_> = blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .state
+                .name
+                .split_once(':')
+                .map(|(namespace, _)| namespace)
+        })
+        .collect();
+    let namespaces = namespaces
+        .into_iter()
+        .map(|namespace| NbtValue::String(namespace.into()))
+        .collect();
+    nbt_compound([
+        (
+            "SoftwareVersion",
+            NbtValue::String(env!("CARGO_PKG_VERSION").into()),
+        ),
+        ("BlockNamespaces", NbtValue::List(namespaces)),
+    ])
 }
 
 fn read_state(tag: &NbtValue) -> Result<SceneBlockState, String> {
@@ -314,17 +366,7 @@ fn decode_litematic(
     data: &[u8],
     blocks: &mut HashMap<[i32; 3], SceneBlockState>,
 ) -> Result<(Option<String>, Option<i32>), String> {
-    let limits = DecodeLimits {
-        max_input_bytes: MAX_STRUCTURE_BYTES,
-        max_decompressed_bytes: MAX_STRUCTURE_BYTES,
-        max_dimension: MAX_LITEMATIC_VOLUME,
-        max_volume: MAX_LITEMATIC_VOLUME,
-        max_nbt_depth: NBT_LIMITS.max_depth,
-        max_nbt_string_bytes: NBT_LIMITS.max_string_bytes,
-        max_nbt_collection_items: NBT_LIMITS.max_collection_items,
-        max_nbt_nodes: NBT_LIMITS.max_nodes,
-        ..DecodeLimits::default()
-    };
+    let limits = structure_limits(MAX_LITEMATIC_VOLUME, NBT_LIMITS);
     // The crate accepts gzip for this format. Also accept raw NBT from older workflows.
     let compressed;
     let data = if data.first() == Some(&10) {
@@ -341,32 +383,53 @@ fn decode_litematic(
     let mut regions: Vec<_> = schematic.get_all_regions().into_iter().collect();
     regions.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
     for (_, region) in regions {
-        let palette = region
-            .get_palette()
-            .into_iter()
-            .map(|state| {
-                SceneBlockState::from_parts(
-                    state.name.to_string(),
-                    state
-                        .properties
-                        .into_iter()
-                        .map(|(key, value)| (key.to_string(), value.to_string()))
-                        .collect(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        // Nucleation's row iterator increments X after visiting the last cell.
-        if region
-            .get_tight_bounds()
-            .is_some_and(|bounds| bounds.max.0 == i32::MAX)
-        {
-            return Err("方块坐标超出编辑器上限。".into());
-        }
-        for ((x, y, z), index) in region.content_cells() {
-            add_block(blocks, [x, y, z], &palette[index as usize])?;
-        }
+        add_region_blocks(region, [0; 3], blocks)?;
     }
     Ok((schematic.metadata.name, schematic.metadata.mc_version))
+}
+
+fn structure_limits(max_volume: usize, nbt: NbtReadLimits) -> DecodeLimits {
+    DecodeLimits {
+        max_input_bytes: MAX_STRUCTURE_BYTES,
+        max_decompressed_bytes: MAX_STRUCTURE_BYTES,
+        max_dimension: max_volume,
+        max_volume,
+        max_nbt_depth: nbt.max_depth,
+        max_nbt_string_bytes: nbt.max_string_bytes,
+        max_nbt_collection_items: nbt.max_collection_items,
+        max_nbt_nodes: nbt.max_nodes,
+        ..DecodeLimits::default()
+    }
+}
+
+fn add_region_blocks(
+    region: &Region,
+    offset: [i32; 3],
+    blocks: &mut HashMap<[i32; 3], SceneBlockState>,
+) -> Result<(), String> {
+    let palette = region
+        .get_palette()
+        .into_iter()
+        .map(SceneBlockState::from_nucleation)
+        .collect::<Result<Vec<_>, _>>()?;
+    // Nucleation's row iterator increments X after visiting the last cell.
+    if region
+        .get_tight_bounds()
+        .is_some_and(|bounds| bounds.max.0 == i32::MAX)
+    {
+        return Err("方块坐标超出编辑器上限。".into());
+    }
+    for ((x, y, z), index) in region.content_cells() {
+        let pos = [x, y, z];
+        let mut placed = [0; 3];
+        for axis in 0..3 {
+            placed[axis] = pos[axis]
+                .checked_add(offset[axis])
+                .ok_or("方块坐标超出编辑器上限。")?;
+        }
+        add_block(blocks, placed, &palette[index as usize])?;
+    }
+    Ok(())
 }
 
 pub fn decode(data: &[u8], format: StructureFormat, filename: &str) -> Result<Structure, String> {
@@ -377,6 +440,7 @@ pub fn decode(data: &[u8], format: StructureFormat, filename: &str) -> Result<St
     let (label, data_version) = match format {
         StructureFormat::Nbt => (None, decode_java(data, &mut blocks)?),
         StructureFormat::Litematic => decode_litematic(data, &mut blocks)?,
+        StructureFormat::Mcstructure => bedrock::decode(data, &mut blocks)?,
     };
     let mut blocks: Vec<_> = blocks
         .into_iter()
@@ -416,6 +480,10 @@ fn encode_java(
     }
     let root = nbt_compound([
         ("DataVersion", NbtValue::Int(data_version)),
+        (
+            BUILDER_METADATA_TAG,
+            NbtValue::Compound(builder_metadata(blocks)),
+        ),
         ("size", nbt_vector(size)),
         ("palette", NbtValue::List(palette)),
         ("blocks", NbtValue::List(entries)),
@@ -425,6 +493,34 @@ fn encode_java(
     write_nbt(&mut writer, &root, "", Endian::Big).map_err(|error| error.to_string())?;
     let encoder = writer.into_inner().map_err(|error| error.to_string())?;
     encoder.finish().map_err(|error| error.to_string())
+}
+
+fn add_litematic_metadata(bytes: &[u8], metadata: &NbtMap) -> io::Result<Vec<u8>> {
+    let mut input = GzDecoder::new(bytes);
+    let mut header = [0; 3];
+    input.read_exact(&mut header)?;
+    let [tag, name_high, name_low] = header;
+    if tag != 10 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Expected an NBT root compound",
+        ));
+    }
+    let name_len = u16::from_be_bytes([name_high, name_low]);
+    let mut root_name = vec![0; usize::from(name_len)];
+    input.read_exact(&mut root_name)?;
+
+    // Nucleation has no general Litematica metadata hook. A named NBT root
+    // compound has the same encoding as a compound field in the root payload.
+    let mut writer = BufWriter::new(GzEncoder::new(Vec::new(), Compression::new(3)));
+    writer.write_all(&header)?;
+    writer.write_all(&root_name)?;
+    write_nbt(&mut writer, metadata, BUILDER_METADATA_TAG, Endian::Big)?;
+    io::copy(&mut input, &mut writer)?;
+    writer
+        .into_inner()
+        .map_err(|error| error.into_error())?
+        .finish()
 }
 
 fn encode_litematic(
@@ -437,6 +533,22 @@ fn encode_litematic(
     if size.into_iter().map(i64::from).product::<i64>() > MAX_LITEMATIC_VOLUME as i64 {
         return Err("投影的包围盒超过 1600 万格。".into());
     }
+    let region = build_region(blocks, offset, origin, size)?;
+    let mut schematic = UniversalSchematic::new(project.name.clone());
+    schematic.metadata.author = Some("Builder MCP".into());
+    schematic.metadata.mc_version = Some(project.data_version);
+    schematic.add_region(region);
+    let bytes = to_litematic_with_compression(&schematic, Compression::fast())
+        .map_err(|error| error.to_string())?;
+    add_litematic_metadata(&bytes, &builder_metadata(blocks)).map_err(|error| error.to_string())
+}
+
+fn build_region(
+    blocks: &[&PlacedBlock],
+    offset: [i32; 3],
+    origin: [i32; 3],
+    size: [i32; 3],
+) -> Result<Region, String> {
     let [x, y, z] = origin;
     let [width, height, depth] = size;
     let mut region = Region::try_new("Main".into(), (x, y, z), (width, height, depth))?;
@@ -448,11 +560,7 @@ fn encode_litematic(
         let [x, y, z] = std::array::from_fn(|axis| origin[axis] + block.pos[axis] - offset[axis]);
         region.set_block(x, y, z, state);
     }
-    let mut schematic = UniversalSchematic::new(project.name.clone());
-    schematic.metadata.author = Some("Builder MCP".into());
-    schematic.metadata.mc_version = Some(project.data_version);
-    schematic.add_region(region);
-    to_litematic(&schematic).map_err(|error| error.to_string())
+    Ok(region)
 }
 
 pub fn encode(
@@ -501,6 +609,11 @@ pub fn encode(
             let origin = if preserve_origin { min } else { [0; 3] };
             let size = std::array::from_fn(|axis| max[axis] - min[axis] + 1);
             encode_litematic(project, &blocks, min, origin, size)
+        }
+        StructureFormat::Mcstructure => {
+            let origin = if preserve_origin { min } else { [0; 3] };
+            let size = std::array::from_fn(|axis| max[axis] - min[axis] + 1);
+            bedrock::encode(project, &blocks, min, origin, size)
         }
     }
 }
@@ -554,12 +667,59 @@ mod tests {
     }
 
     #[test]
+    fn structures_store_the_exporter_version_and_used_namespaces() {
+        let mut fixture = project();
+        fixture.blocks.push(PlacedBlock {
+            pos: [-4, 4, 4],
+            state: SceneBlockState::from_parts("create:casing".into(), BTreeMap::new()).unwrap(),
+        });
+        for format in [StructureFormat::Nbt, StructureFormat::Litematic] {
+            let bytes = encode(&fixture, format, true).unwrap();
+            let root = read_java_nbt(&bytes).unwrap();
+            let metadata = root
+                .get(BUILDER_METADATA_TAG)
+                .unwrap()
+                .as_compound()
+                .unwrap();
+            assert_eq!(
+                metadata
+                    .get("SoftwareVersion")
+                    .unwrap()
+                    .as_string()
+                    .unwrap(),
+                env!("CARGO_PKG_VERSION")
+            );
+            let namespaces = metadata.get("BlockNamespaces").and_then(nbt_list).unwrap();
+            assert_eq!(
+                namespaces
+                    .iter()
+                    .map(|tag| tag.as_string().unwrap())
+                    .collect::<Vec<_>>(),
+                ["create", "test"]
+            );
+        }
+    }
+
+    #[test]
     fn empty_structures_reopen_and_truncated_gzip_is_rejected() {
         let mut expected = project();
         expected.blocks.clear();
         for format in [StructureFormat::Nbt, StructureFormat::Litematic] {
             let data = encode(&expected, format, true).unwrap();
             assert_eq!(decode(&data, format, &expected.name).unwrap(), expected);
+            let root = read_java_nbt(&data).unwrap();
+            let metadata = root
+                .get(BUILDER_METADATA_TAG)
+                .unwrap()
+                .as_compound()
+                .unwrap();
+            assert!(
+                metadata
+                    .get("BlockNamespaces")
+                    .and_then(nbt_list)
+                    .unwrap()
+                    .is_empty()
+            );
             assert!(decode(&data[..data.len() - 1], format, &expected.name).is_err());
         }
     }

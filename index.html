@@ -16,15 +16,16 @@
       </button>
       <div class="topbar-actions">
         <button class="button quiet" id="project-new" title="新建 (Ctrl+N)" aria-keyshortcuts="Control+n"><i data-icon="file-plus"></i><span>新建</span></button>
-        <button class="button quiet" id="project-open" title="打开原版结构或 Litematica 投影 (Ctrl+O)" aria-keyshortcuts="Control+o"><i data-icon="folder-open"></i><span>打开</span></button>
+        <button class="button quiet" id="project-open" title="打开结构文件 (Ctrl+O)" aria-keyshortcuts="Control+o"><i data-icon="folder-open"></i><span>打开</span></button>
         <button class="button quiet" id="project-save" title="保存 (Ctrl+S)" aria-keyshortcuts="Control+s"><i data-icon="save"></i><span>保存</span></button>
         <div class="toolbar-divider"></div>
         <button class="connection" id="mcp-status" title="MCP 连接设置"><span class="connection-dot"></span><span>MCP</span></button>
         <div class="dropdown">
           <button class="button primary" id="save-menu-button" aria-expanded="false" aria-controls="save-menu" title="另存为 (Ctrl+Shift+S)" aria-keyshortcuts="Control+Shift+s"><i data-icon="download"></i><span>另存为</span><i data-icon="chevron-down" class="chevron"></i></button>
           <div class="menu" id="save-menu" hidden>
-            <button data-format="nbt"><i data-icon="file-box"></i><span>原版结构 <small>.nbt</small></span></button>
+            <button data-format="nbt"><i data-icon="file-box"></i><span>Java 版结构 <small>.nbt</small></span></button>
             <button data-format="litematic"><i data-icon="layers"></i><span>投影文件 <small>.litematic</small></span></button>
+            <button data-format="mcstructure" data-desktop-format hidden disabled><i data-icon="box"></i><span>基岩版结构 <small>.mcstructure</small></span></button>
           </div>
         </div>
       </div>
@@ -71,6 +72,7 @@
           <div class="tools" id="tools" aria-label="编辑工具">
             <button data-tool="select" class="icon-button" title="选取 (V) · Shift 多选" aria-label="选取" aria-pressed="true"><i data-icon="mouse-pointer-2"></i></button>
             <button data-tool="place" class="icon-button" title="放置 (P)" aria-label="放置" aria-pressed="false" disabled><i data-icon="plus"></i></button>
+            <button data-tool="replace" class="icon-button" title="替换方块 (R)" aria-label="替换方块" aria-keyshortcuts="R" aria-pressed="false" disabled><i data-icon="replace"></i></button>
             <button data-tool="erase" class="icon-button" title="擦除 (E)" aria-label="擦除" aria-pressed="false"><i data-icon="eraser"></i></button>
             <span class="tool-divider"></span>
             <button data-tool="box" class="icon-button" title="区域选取 (B)" aria-label="区域选取" aria-pressed="false"><i data-icon="square-dashed-mouse-pointer"></i></button>
@@ -119,7 +121,7 @@
               <fieldset><legend>尺寸</legend><div class="axis-inputs" id="transform-size"></div></fieldset>
               <button type="submit" class="button subtle full"><i data-icon="move-3d"></i>应用移动和缩放</button>
               <div class="transform-row"><button type="button" class="button subtle" data-rotation="-90" title="逆时针转 90°"><i data-icon="rotate-ccw"></i>−90°</button><button type="button" class="button subtle" data-rotation="90" title="顺时针转 90°"><i data-icon="rotate-cw"></i>90°</button></div>
-              <div class="transform-row"><button type="button" class="button subtle" id="paint-selection" disabled><i data-icon="paint-bucket"></i>替换方块</button><button type="button" class="button subtle danger" id="delete-selection" title="删除选区 (Delete)"><i data-icon="trash-2"></i>删除</button></div>
+              <button type="button" class="button subtle danger" id="delete-selection" title="删除选区 (Delete)"><i data-icon="trash-2"></i>删除</button>
             </form>
           </section>
           <section class="inspector-section scene-section">
@@ -127,7 +129,7 @@
             <dl class="scene-stats">
               <div><dt>方块总数</dt><dd id="scene-count">0</dd></div>
               <div><dt>包围盒尺寸</dt><dd id="scene-bounds">—</dd></div>
-              <div><dt>Minecraft 版本</dt><dd id="minecraft-version">—</dd></div>
+              <div><dt>Java 版导出版本</dt><dd id="minecraft-version">—</dd></div>
             </dl>
           </section>
         </div>
@@ -136,16 +138,17 @@
 
     <footer class="statusbar">
       <div class="status-message"><span class="status-dot"></span><span id="status-message" role="status">就绪</span></div>
-      <div class="status-data"><span id="cursor-position" class="coordinates">X — &nbsp; Y — &nbsp; Z —</span><label class="work-layer"><i data-icon="layers"></i>工作层 <input id="work-layer" type="number" min="-1000000" max="1000000" value="0" aria-label="工作层 Y 坐标" /></label><span class="edition">Minecraft Java</span></div>
+      <div class="status-data"><span id="cursor-position" class="coordinates">X — &nbsp; Y — &nbsp; Z —</span><label class="work-layer"><i data-icon="layers"></i>工作层 <input id="work-layer" type="number" min="-1000000" max="1000000" value="0" aria-label="工作层 Y 坐标" /></label><span class="edition" id="edition">Minecraft Java</span></div>
     </footer>
 
     <dialog id="pack-dialog" class="dialog">
-      <div class="dialog-header"><div><h2>全局资源包</h2><p>从下往上加载，上层资源包覆盖下层的同名资源。</p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+      <div class="dialog-header"><div><h2>全局资源包</h2><p>拖动把手排序。资源包从下往上加载，上层优先。</p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
       <div class="pack-progress" data-pack-progress hidden></div>
       <div id="pack-list" class="pack-list"></div>
       <div class="dialog-error" id="pack-error" role="alert" hidden></div>
       <div class="dialog-actions">
-        <button class="button quiet" data-pack-type="folder"><i data-icon="folder-open"></i>导入文件夹</button>
+        <button class="button quiet" data-pack-type="folder" title="选择包含 assets 的资源包根目录"><i data-icon="folder-open"></i>导入解包资源包</button>
+        <button class="button subtle" data-pack-type="archive-folder" title="批量导入所选目录中的 ZIP 和 JAR"><i data-icon="folder-archive"></i>批量导入目录</button>
         <button class="button primary" data-pack-type="archive"><i data-icon="package-plus"></i>导入 ZIP / JAR</button>
       </div>
     </dialog>
@@ -162,7 +165,7 @@
         <div class="dialog-header"><h2>项目设置</h2><button class="icon-button" type="button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
         <div class="dialog-fields">
           <label>项目名称<input id="edit-name" maxlength="120" required /></label>
-          <label>Minecraft 版本<select id="edit-minecraft-version" required></select></label>
+          <label>Java 版导出版本<select id="edit-minecraft-version" required></select></label>
         </div>
         <div class="dialog-actions"><button class="button quiet" type="button" data-close>取消</button><button class="button primary" type="submit">应用</button></div>
       </form>
@@ -174,7 +177,7 @@
           <div><h2 id="unsaved-title">有未保存的修改</h2><p id="unsaved-message"></p></div>
         </div>
         <div class="dialog-fields" id="unsaved-format-field" hidden>
-          <label>保存格式<select id="unsaved-format"><option value="litematic">Litematica 投影 (.litematic)</option><option value="nbt">Minecraft 原版结构 (.nbt)</option></select></label>
+          <label>保存格式<select id="unsaved-format"><option value="litematic">Litematica 投影 (.litematic)</option><option value="nbt">Java 版结构 (.nbt)</option><option value="mcstructure" data-desktop-format hidden disabled>基岩版结构 (.mcstructure)</option></select></label>
         </div>
         <div class="dialog-actions">
           <button class="button quiet" type="submit" value="cancel" autofocus>取消</button>
@@ -205,7 +208,7 @@
       <div class="dialog-header"><h2>操作快捷键</h2><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
       <dl class="shortcuts">
         <div><dt>选取 / 多选</dt><dd><kbd>V</kbd><kbd>Shift</kbd> + 点击</dd></div>
-        <div><dt>放置 / 擦除 / 吸取</dt><dd><kbd>P</kbd><kbd>E</kbd><kbd>I</kbd></dd></div>
+        <div><dt>放置 / 替换 / 擦除 / 吸取</dt><dd><kbd>P</kbd><kbd>R</kbd><kbd>E</kbd><kbd>I</kbd></dd></div>
         <div><dt>区域选取 / 填充</dt><dd><kbd>B</kbd><kbd>G</kbd></dd></div>
         <div><dt>复制 / 粘贴选区</dt><dd><kbd>Ctrl+C</kbd><kbd>Ctrl+V</kbd></dd></div>
         <div><dt>全选 / 删除选区</dt><dd><kbd>Ctrl+A</kbd><kbd>Del</kbd></dd></div>

@@ -1,6 +1,6 @@
 ---
 name: builder-mcp
-description: 用方块工坊的 Builder MCP 搭建、编辑、检查或导出 Minecraft Java 建筑。适用于操作编辑器场景、按 Mod ID 选方块、复制选区，以及交付 .nbt 或 .litematic 文件。
+description: 用方块工坊的 Builder MCP 搭建、编辑、检查或导出 Minecraft 建筑。适用于操作编辑器场景、按 Mod ID 选方块、复制选区，以及交付 .nbt、.litematic 或基岩版 .mcstructure 文件。
 ---
 
 # Builder MCP
@@ -24,5 +24,5 @@ description: 用方块工坊的 Builder MCP 搭建、编辑、检查或导出 Mi
 - 用 `set_camera` 切到 `isometric`、`front`、`right` 或 `top`，再用 `capture_screenshot` 查看整体或立面。`isometric` 默认使用正交投影。交付透明底建筑图可调用 `capture_screenshot {"transparent":true,"width":1920}`，其中 `width` 是图片最长边。
 - 用 `render_block_states` 单独检查最多 32 个方块状态。`follow_camera: false` 用默认斜视角，`true` 沿用当前视口方向和投影。精确核对坐标和方块状态时，用带范围的 `list_blocks`。
 - 用 `save_project` 保存活动项目。指定 `path` 时用绝对路径，扩展名决定格式。需要替换用户指定的已有文件时传 `overwrite: true`。省略 `path` 会保存至格式匹配的当前文件，或在应用数据目录的 `exports` 生成文件，首次默认 `.litematic`。
-- `.litematic` 项目保存保留场景坐标，`.nbt` 项目保存会把有负坐标的轴平移至从 0 开始。只需交付独立副本时用 `export_structure {"format":"litematic"}` 或 `{"format":"nbt"}`。副本写入 `exports`，建筑包围盒最小角平移至 `[0,0,0]`。
+- `.litematic` 和 `.mcstructure` 项目保存保留场景坐标，`.nbt` 项目保存会把有负坐标的轴平移至从 0 开始。只需交付独立副本时用 `export_structure`，可选 `litematic`、`nbt` 或 `mcstructure`。副本写入 `exports`，建筑包围盒最小角平移至 `[0,0,0]`。
 - 检查保存返回的 `path`、`format` 和 `bytes`，把实际输出路径交给用户。需要确认活动项目已保存时，再读 `get_scene` 的 `dirty`。

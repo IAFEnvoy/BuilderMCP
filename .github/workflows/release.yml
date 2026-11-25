@@ -1,14 +1,10 @@
 name: Publish Release
 
 on:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: publish-release
-  cancel-in-progress: false
 
 jobs:
   version:
@@ -21,21 +17,27 @@ jobs:
       - name: Read package version
         id: cargo
         shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          # GitHub's startsWith ignores case. Match the literal prefix here.
+          if [[ "$COMMIT_MESSAGE" != release:* ]]; then
+            exit 0
+          fi
           version=$(cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 |
             jq -er '.packages[] | select(.name == "buildermcp") | .version')
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  build:
-    needs: version
-    uses: ./.github/workflows/build.yml
-
   publish:
     name: Publish executables
-    needs: [version, build]
+    needs: version
+    if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: publish-release-${{ needs.version.outputs.version }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +56,7 @@ jobs:
           tag="v$RELEASE_VERSION"
           tag_ref="refs/tags/$tag"
           if git show-ref --verify --quiet "$tag_ref" && [[ "$(git rev-parse "$tag_ref^{commit}")" != "$GITHUB_SHA" ]]; then
-            echo "::error::Tag $tag already points to a different commit."
+            echo "::error::Tag $tag already points to a different commit. Bump the version in src-tauri/Cargo.toml and update Cargo.lock."
             exit 1
           fi
 

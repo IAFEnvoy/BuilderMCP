@@ -1,6 +1,6 @@
 [package]
 name = "buildermcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Minecraft building editor with a local MCP server"
 edition = "2024"
 

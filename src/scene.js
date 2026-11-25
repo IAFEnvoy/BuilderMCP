@@ -1,13 +1,13 @@
 import { dataVersionFor } from './minecraft-versions.js';
 
 export const DEFAULT_DATA_VERSION = dataVersionFor('1.21.1');
-export const STRUCTURE_FORMATS = ['nbt', 'litematic'];
+export const JAVA_STRUCTURE_FORMATS = ['nbt', 'litematic'];
 export const MAX_BLOCKS = 200_000;
 export const MAX_COORDINATE = 1_000_000;
 const MAX_FILL_VOLUME = 2_000_000;
 const MAX_HISTORY_CHANGES = 500_000;
 const resourceId = /^[a-z0-9_.-]+:[a-z0-9_./-]+$/;
-const propertyName = /^[a-z0-9_]+$/;
+const propertyName = /^(?:[a-z0-9_]+|[a-z0-9_.-]+:[a-z0-9_.-]+)$/;
 const propertyValue = /^[a-z0-9_.-]+$/;
 const air = new Set(['minecraft:air', 'minecraft:cave_air', 'minecraft:void_air']);
 export const isAir = name => air.has(name);

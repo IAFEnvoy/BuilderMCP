@@ -4,6 +4,7 @@ import { strToU8, zipSync } from 'fflate';
 import { BlockCatalog, loadArchive } from '../src/resource-pack.js';
 import { buildGeometry } from '../src/model-geometry.js';
 import { BuildScene, emptyProject } from '../src/scene.js';
+import { textureFrameAt, textureTimeline } from '../src/texture-animation.js';
 
 function archive(entries) {
   return zipSync(Object.fromEntries(Object.entries(entries).map(([path, value]) => [path, strToU8(typeof value === 'string' ? value : JSON.stringify(value))])));
@@ -139,6 +140,41 @@ test('texture metadata can come from the same pack as the image or from a higher
   assert.deepEqual(new BlockCatalog([base, replacement, metadata]).textures.get(key), {
     bytes: replacement.textures.get(key), animation: overrideAnimation,
   });
+});
+
+test('animated texture frames use the Minecraft default and explicit frame sizes', () => {
+  assert.equal(textureTimeline(undefined, 16, 48), null);
+  for (const [metadata, imageSize, expected] of [
+    [{}, [16, 48], [16, 16, 1, 3]],
+    [{}, [48, 16], [16, 16, 3, 3]],
+    [{ width: 8 }, [32, 16], [8, 16, 4, 4]],
+    [{ height: 8 }, [16, 32], [16, 8, 1, 4]],
+    [{ width: 8, height: 16 }, [16, 32], [8, 16, 2, 4]],
+  ]) {
+    const { width, height, columns, frameCount } = textureTimeline(metadata, ...imageSize);
+    assert.deepEqual([width, height, columns, frameCount], expected);
+  }
+  const implicit = textureTimeline({ frametime: 2 }, 16, 48);
+  assert.deepEqual(Array.from({ length: 7 }, (_, tick) => textureFrameAt(implicit, tick).index), [0, 0, 1, 1, 2, 2, 0]);
+  assert.throws(() => textureTimeline({ width: 3 }, 16, 48), /帧尺寸/);
+});
+
+test('animated texture sequences keep per-frame durations and blend across a loop', () => {
+  const metadata = {
+    width: 8, height: 8, frametime: 2, interpolate: true,
+    frames: [25, { index: 3, time: 4 }, 3, { index: 2, time: 0 }, 1, 0],
+  };
+  const timeline = textureTimeline(metadata, 16, 16);
+  assert.equal(timeline.firstFrame, 3);
+  assert.equal(timeline.duration, 10);
+  assert.deepEqual(textureFrameAt(timeline, 2), { index: 3, next: 3, mix: 0 });
+  assert.deepEqual(textureFrameAt(timeline, 5), { index: 3, next: 1, mix: 0.5 });
+  assert.deepEqual(textureFrameAt(timeline, 6), { index: 1, next: 0, mix: 0 });
+  assert.deepEqual(textureFrameAt(timeline, 9), { index: 0, next: 3, mix: 0.5 });
+  assert.deepEqual(textureFrameAt(timeline, 10), textureFrameAt(timeline, 0));
+  const still = textureTimeline({ ...metadata, frames: [2, 2, 2] }, 16, 16);
+  assert.equal(still.animated, false);
+  assert.deepEqual(textureFrameAt(still, 10), { index: 2, next: 2, mix: 0 });
 });
 
 test('modern inventory models use GUI inheritance and preserve the multipart block model in the scene', async () => {

@@ -300,8 +300,12 @@ kbd {
 .dialog-error { max-height: 18vh; overflow: auto; padding: 0 17px 12px; color: #ffb6a6; font-size: 12px; white-space: pre-line; overflow-wrap: anywhere; }
 .pack-list { display: grid; gap: 6px; max-height: 43vh; overflow: auto; padding: 12px 16px; }
 .pack-row { display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 6px 8px; background: #282f39; border-radius: 5px; }
-.pack-row > svg { color: var(--accent); }
 .pack-row > .icon-button { flex: none; }
+.pack-handle { touch-action: none; }
+.pack-handle:not(:disabled) { cursor: grab; }
+.pack-placeholder { opacity: 0.4; }
+.pack-dragging { box-shadow: 0 5px 18px #0006; outline: 1px solid #4b5869; }
+.pack-list:has(.pack-dragging), .pack-list:has(.pack-dragging) .pack-handle { cursor: grabbing; }
 .pack-row > div { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .pack-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 580; }
 .pack-row span { color: var(--dim); font-size: 10px; }

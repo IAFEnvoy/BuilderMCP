@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { applyTexture, buildGeometry, materialKey, tintFor } from './model-geometry.js';
 import { stateKey } from './scene.js';
+import { createTexturePlayer } from './texture-animation.js';
 
 const thumbnailSize = 64;
 const blockImageSize = 256;
@@ -107,7 +108,7 @@ export class ModelPreview {
     const cache = this.cache;
     if (!cache.has(key)) {
       cache.set(key, this.prepare(catalog, state, inventory).then(layers => this.enqueue(() =>
-        this.render(layers, this.thumbnailCamera, thumbnailSize, cache === this.cache))));
+        this.render(layers, this.thumbnailCamera, thumbnailSize, { active: cache === this.cache }))));
     }
     const snapshot = await cache.get(key);
     if (snapshot) canvas.getContext('2d').drawImage(snapshot, 0, 0, canvas.width, canvas.height);
@@ -120,6 +121,7 @@ export class ModelPreview {
   async renderBlockStates(catalog, states, camera) {
     const rendered = new Map();
     const images = [];
+    const tick = catalog.animationTick();
     for (const state of states) {
       const key = stateKey(state);
       if (!rendered.has(key)) {
@@ -127,7 +129,7 @@ export class ModelPreview {
         const parts = catalog.parts(state, [0, 0, 0]);
         const layers = await Promise.all(parts.map(part => this.prepareLayer(catalog, part, identity, tint)));
         frameBlock(camera, layers);
-        const image = await this.enqueue(() => this.render(layers, camera, blockImageSize));
+        const image = await this.enqueue(() => this.render(layers, camera, blockImageSize, { tick }));
         rendered.set(key, image.toDataURL('image/png').split(',')[1]);
       }
       images.push(rendered.get(key));
@@ -158,7 +160,7 @@ export class ModelPreview {
     }
   }
 
-  async render(layers, camera, size, active = true) {
+  async render(layers, camera, size, { active = true, tick } = {}) {
     const meshes = new THREE.Group();
     const materials = new Map();
     try {
@@ -176,12 +178,15 @@ export class ModelPreview {
           const key = materialKey(batch);
           if (!materials.has(key)) {
             const material = new THREE.MeshBasicMaterial({ vertexColors: true });
-            const texture = new THREE.CanvasTexture(batch.image.image);
+            const source = batch.image;
+            const player = tick !== undefined && source.animation ? createTexturePlayer(source.animation) : null;
+            player?.update(tick);
+            const texture = new THREE.CanvasTexture();
             texture.colorSpace = THREE.SRGBColorSpace;
             texture.magFilter = THREE.NearestFilter;
             texture.minFilter = THREE.NearestMipmapLinearFilter;
             const entry = { material, texture, forceTranslucent: batch.forceTranslucent };
-            applyTexture(entry, batch.image);
+            applyTexture(entry, { ...source, image: player?.image ?? source.image });
             materials.set(key, entry);
           }
           const mesh = new THREE.Mesh(batch.geometry, materials.get(key).material);

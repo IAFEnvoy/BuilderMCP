@@ -91,7 +91,7 @@ struct McpServer {
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Use new_project or open_project to start working on a Minecraft structure, and save_project to save it as .nbt or .litematic. Coordinates are integer [x, y, z] Minecraft cells. Use get_scene and search_palette for context, render_block_states for block previews, and capture_screenshot to inspect the live viewport. Block edits are undoable in the editor.")
+            .with_instructions("Use new_project or open_project to start working on a Minecraft structure, and save_project to save it as .nbt, .litematic, or Bedrock .mcstructure. Coordinates are integer [x, y, z] Minecraft cells. Use get_scene and search_palette for context, render_block_states for block previews, and capture_screenshot to inspect the live viewport. Block edits are undoable in the editor.")
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

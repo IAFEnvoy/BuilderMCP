@@ -1,6 +1,6 @@
 # 方块工坊 · Builder MCP
 
-用 Tauri 2 和 Three.js 搭建 Minecraft Java 版建筑。桌面应用提供 3D 编辑器和本机 MCP 服务，两者编辑同一个场景并共享撤销历史。
+用 Tauri 2 和 Three.js 搭建 Minecraft 建筑。桌面应用提供 3D 编辑器和本机 MCP 服务，两者编辑同一个场景并共享撤销历史。
 
 ## 启动
 
@@ -15,29 +15,33 @@ npm run tauri dev
 
 ## 发布
 
-在 GitHub 的 **Actions → Publish Release → Run workflow** 手动发布。流程从 `src-tauri/Cargo.toml` 读取版本，构建 Windows x64、Linux x64、macOS Intel 和 Apple Silicon 的可执行文件，再发布到 `v<版本号>` 并生成 Release 说明。Windows 提供 `.exe`，Linux 和 macOS 各自的 `.tar.gz` 内含可执行文件并保留执行权限。
+发版前提高 `src-tauri/Cargo.toml` 中的版本，连同更新后的 `src-tauri/Cargo.lock` 一起提交。推送到 `main` 时，如果最新提交的标题以 `release:` 开头，构建成功后会按 Cargo 版本发布到 `v<版本号>` 并生成 Release 说明。Windows x64 提供 `.exe`，Linux x64、macOS Intel 和 Apple Silicon 各自的 `.tar.gz` 内含可执行文件并保留执行权限。
 
 ## 编辑建筑
 
 - 启动时画布为空，导入的全局资源包会自动加载到方块库。点「新建」可开始另一座建筑。
-- 「打开」读取原版结构 `.nbt` 和 Litematica 投影 `.litematic`，保留方块状态和 Minecraft DataVersion。Litematica 的多个区域会合并到同一场景。编辑后用「保存」更新当前文件，首次保存或使用「另存为」时可选择格式。
+- 「打开」读取 Java 版结构 `.nbt` 和 Litematica 投影 `.litematic`，保留方块状态和 Java DataVersion。Litematica 的多个区域会合并到同一场景。桌面版和 MCP 还支持基岩版结构 `.mcstructure`。编辑后用「保存」更新当前文件，首次保存或使用「另存为」时可选择格式。
 - 当前项目有修改时，新建、打开或关闭窗口前会提示保存。可选择「保存」「不保存」或「取消」。尚未保存过的项目可在弹窗中选择结构格式。
 - 用 `Ctrl+Z` 撤销，`Ctrl+Y` 或 `Ctrl+Shift+Z` 重做。`Ctrl+N` 新建，`Ctrl+O` 打开，`Ctrl+S` 保存，`Ctrl+Shift+S` 另存为。视口右下角的问号可查看快捷键。
 - 在方块库用 Mod ID 下拉框按方块 ID 的命名空间筛选，也可以同时搜索名称或资源 ID、选择类别。点击方块可切换画笔，检查器可修改朝向、轴向或半砖位置等方块状态。
 - 左键使用当前工具，中键拖动旋转视角，右键拖动平移，滚轮缩放。底部可输入铺设方块的工作层 Y 坐标。
 - 视口右上角可切换「透视」和「正交」。「等轴」会切到正交投影，并从等轴角度框住建筑。顶部的「导出透明 PNG」按当前取景渲染建筑，图片最长边为 1920 像素。
+- 方块纹理按同名 `.png.mcmeta` 中的 `animation` 设置循环播放。视口截图、透明 PNG 和 MCP 的方块渲染使用当前动画帧。方块库和画笔缩略图使用首个有效帧。
 - 用选取工具点击方块，按住 Shift 多选。用区域选取或填充工具标记两个角点。检查器可移动选区原点、绕 Y 轴旋转 90°，或把选区缩放到三个轴的整数尺寸。
+- 选好画笔后，在视口左侧点「替换方块」或按 `R`。点击已有方块可替换单块，点击选区内的方块可替换整个选区。
 - 选中方块后用 `Ctrl+C` 复制，按 `Ctrl+V` 显示粘贴预览，再点击视口放置。`Esc` 取消预览。粘贴以选区包围盒的最小角为原点，复制的方块会覆盖对应位置，空格会保留目标方块。整次粘贴可以撤销，剪贴板可在同一窗口内重复使用或跨项目使用。
-- 保存 `.litematic` 时保留场景坐标。保存 `.nbt` 时，有负坐标的轴会平移到从 0 开始。实体和方块实体的附加数据会跳过。
-- 在项目设置选择目标 Minecraft Java 正式版，应用会将对应的数据版本写入结构文件。默认使用 1.21.1。导入文件的版本如果未收录，可在设置中选择「保留原版本」。[Minecraft Wiki 数据版本表](https://zh.minecraft.wiki/w/数据版本)
+- 保存 `.litematic` 和 `.mcstructure` 项目时保留场景坐标。导入游戏导出的 `.mcstructure` 时使用局部坐标。保存 `.nbt` 时，有负坐标的轴会平移到从 0 开始。实体和方块实体的附加数据会跳过。
+- 基岩版结构可读取 v1、v2 及 zlib 压缩的 v2，保存为小端 NBT v1。Java 与基岩版的方块及状态通过 Nucleation 的映射转换，基岩版附加包方块在目标游戏中需要相应的附加包。
+- 结构文件的根级 `BuilderMCP` 标签记录导出软件版本 `SoftwareVersion`，以及实际放置的非空气方块所用的命名空间 `BlockNamespaces`。
+- 项目设置中的 Minecraft 版本用于 Java 版导出，默认使用 1.21.1。导入的 Java 文件版本如果未收录，可在设置中选择「保留原版本」。[Minecraft Wiki 数据版本表](https://zh.minecraft.wiki/w/数据版本)
 
 ## 全局资源包
 
-在左下角「资源包」点「导入 ZIP / JAR」可同时选择多个 `.zip` 资源包、Minecraft 客户端或模组的 `.jar`。「导入文件夹」接受带有 `assets` 的资源包根目录。Windows 上的副本保存在 `%APPDATA%\com.iafenvoy.buildermcp\resource-packs`。所有项目共享这份资源库，删除原文件后也能继续使用。
+在左下角「资源包」点「导入 ZIP / JAR」可同时选择多个 `.zip` 资源包、Minecraft 客户端或模组的 `.jar`。「批量导入目录」会按文件名顺序导入所选目录直接包含的 ZIP 和 JAR。「导入解包资源包」接受带有 `assets` 的资源包根目录。Windows 上的副本保存在 `%APPDATA%\com.iafenvoy.buildermcp\resource-packs`。所有项目共享这份资源库，删除原文件后也能继续使用。
 
-把文件拖到桌面应用窗口时，`.zip` 和 `.jar` 会导入资源包，`.nbt` 和 `.litematic` 会打开建筑。拖入多个结构时可选择其中一个，切换建筑前会检查未保存的修改。
+把文件拖到桌面应用窗口时，`.zip` 和 `.jar` 会导入资源包，`.nbt`、`.litematic` 和 `.mcstructure` 会打开建筑。拖入多个结构时可选择其中一个，切换建筑前会检查未保存的修改。
 
-用资源包列表中的 ↑ 和 ↓ 调整顺序。应用从下往上加载，上层的同名资源优先，顺序修改后立即应用并在下次启动时恢复。新导入的包放在最上方。
+拖动资源包左侧的把手调整顺序。也可选中把手后使用 ↑ 和 ↓。应用从下往上加载，上层的同名资源优先，顺序修改后立即应用并在下次启动时恢复。新导入的包放在最上方。
 
 启动加载和手动导入时，方块库和资源包管理窗口会显示总进度、当前包的加载阶段和已索引文件数。
 
@@ -80,9 +84,9 @@ npm run tauri dev
 
 调用 `select_box` 和 `copy_selection` 后，向 `paste_selection` 传入目标 `origin` 即可放置副本。MCP 和编辑器共用剪贴板。
 
-流水化制作可以依次调用 `new_project`、放置方块和 `save_project`，再用 `open_project` 打开返回的路径。`open_project` 和 `save_project` 接受运行编辑器的机器上的绝对路径。省略保存路径时会更新当前文件，首次保存则在应用数据目录的 `exports` 下生成文件，默认使用 `.litematic`。
+流水化制作可以依次调用 `new_project`、放置方块和 `save_project`，再用 `open_project` 打开返回的路径。`open_project` 和 `save_project` 接受运行编辑器的机器上的绝对路径。省略保存路径时会更新当前文件，首次保存则在应用数据目录的 `exports` 下生成文件，默认使用 `.litematic`。保存基岩版时可指定 `.mcstructure` 路径，或传 `{"format":"mcstructure"}`。
 
-`new_project` 可传 `"minecraft_version": "1.21.1"` 指定目标游戏版本。`get_scene`、`new_project` 和 `open_project` 返回可识别的 `minecraftVersion`。
+`new_project` 可传 `"minecraft_version": "1.21.1"` 指定 Java 版导出版本。`get_scene`、`new_project` 和 `open_project` 返回可识别的 `minecraftVersion`。
 
 新建或打开会保留有未保存修改的场景，调用方可传 `discard_unsaved: true` 明确丢弃这些修改。向指定的已有路径保存时可传 `overwrite: true` 覆盖文件。`export_structure` 会在 `exports` 生成独立副本，并以建筑包围盒的最小坐标为局部原点。
 

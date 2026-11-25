@@ -1,14 +1,16 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { STRUCTURE_FORMATS } from './scene.js';
+import { JAVA_STRUCTURE_FORMATS } from './scene.js';
 
 export const desktop = isTauri();
 export const PACK_ARCHIVE_FORMATS = ['zip', 'jar'];
+export const STRUCTURE_FORMATS = desktop ? [...JAVA_STRUCTURE_FORMATS, 'mcstructure'] : JAVA_STRUCTURE_FORMATS;
 
 const types = {
-  nbt: 'Minecraft 原版结构',
+  nbt: 'Minecraft Java 原版结构',
   litematic: 'Litematica 投影',
+  mcstructure: 'Minecraft 基岩版结构',
   png: 'PNG 图片',
 };
 
@@ -26,7 +28,9 @@ export function fileInfo(path) {
 export function structureFileInfo(path) {
   if (typeof path !== 'string') throw new Error('请提供结构文件路径。');
   const { name, extension } = fileInfo(path);
-  if (!STRUCTURE_FORMATS.includes(extension)) throw new Error('请选择 .nbt 或 .litematic 文件。');
+  if (!STRUCTURE_FORMATS.includes(extension)) {
+    throw new Error(`请选择 ${STRUCTURE_FORMATS.map(format => '.' + format).join('、')} 文件。`);
+  }
   return { name, format: extension };
 }
 
@@ -39,7 +43,7 @@ export async function readBrowserStructureFile(file) {
 
 export async function openProject() {
   if (desktop) {
-    const path = await open({ filters: [{ name: 'Minecraft 结构和 Litematica 投影', extensions: STRUCTURE_FORMATS }] });
+    const path = await open({ filters: [{ name: 'Minecraft 结构文件', extensions: STRUCTURE_FORMATS }] });
     return path ? readStructureFile(path) : null;
   }
   const file = await new Promise(resolve => {
@@ -92,7 +96,7 @@ export async function saveStructureAs(project, name, format) {
     return saveStructureFile(project, path, format, true);
   }
   const { encodeStructure } = await import('./structure.js');
-  const bytes = encodeStructure(project, format, { preserveOrigin: true });
+  const bytes = encodeStructure(project, format, { preserveOrigin: true, softwareVersion: __BUILDER_MCP_VERSION__ });
   const path = downloadFile(bytes, name, format);
   return { path, format, bytes: bytes.length };
 }
@@ -103,9 +107,13 @@ export const packsOnDisk = {
   read: async id => new Uint8Array(await invoke('read_resource_pack', { id })),
   remove: id => invoke('remove_resource_pack', { id }),
   async choose(kind) {
-    if (kind === 'folder') {
+    if (kind === 'folder' || kind === 'archive-folder') {
       const folder = await open({ directory: true });
-      return folder ? [folder] : [];
+      if (!folder) return [];
+      if (kind === 'folder') return [folder];
+      const archives = await invoke('list_resource_pack_archives', { path: folder });
+      if (!archives.length) throw new Error('所选文件夹中没有 ZIP 或 JAR 文件。');
+      return archives;
     }
     return await open({
       multiple: true,

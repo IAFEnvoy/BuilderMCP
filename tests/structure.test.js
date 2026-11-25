@@ -87,3 +87,15 @@ test('browser exports use the selected release for the palette and schematic ver
   assert.equal(legacy.Metadata.TotalBlocks, 1n);
   assert.equal(legacy.Regions.Main.BlockStatePalette[1].Name, 'minecraft:furnace');
 });
+
+test('browser exports record the software version and unique placed block namespaces', async () => {
+  const project = {
+    version: 1, name: 'Fixture', dataVersion: 3955,
+    blocks: ['create:casing', 'example:tile', 'create:shaft'].map((name, x) => ({ pos: [x, 0, 0], state: { name } })),
+  };
+  for (const format of ['nbt', 'litematic']) {
+    const root = await readNbt(encodeStructure(project, format, { softwareVersion: '1.2.3' }));
+    assert.equal(root.BuilderMCP.SoftwareVersion, '1.2.3');
+    assert.deepEqual(root.BuilderMCP.BlockNamespaces, ['create', 'example']);
+  }
+});
