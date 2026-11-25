@@ -1,6 +1,5 @@
-import { encodeBase64 } from './desktop.js';
+import { saveStructureFile } from './desktop.js';
 import { boundsOf, boxBetween, inBox, point } from './scene.js';
-import { encodeStructure } from './structure.js';
 
 function page(items, offset = 0, limit = 50, maximum = 1000) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > maximum) throw new Error(`offset must be non-negative and limit must be 1–${maximum}.`);
@@ -42,6 +41,8 @@ export function editorMcp(scene, editor) {
     },
     remove_box: ({ from, to }) => ({ changes: scene.removeBox(from, to), blockCount: scene.blocks.size }),
     select_box: ({ from, to }) => ({ count: scene.selectBox(from, to), bounds: boundsOf(scene.selected) }),
+    copy_selection: () => editor.copySelection(),
+    paste_selection: ({ origin }) => ({ changes: scene.pasteSelection(origin), count: scene.selection.size, bounds: boundsOf(scene.selected) }),
     transform_selection: args => ({ changes: scene.transform(args), count: scene.selection.size, bounds: boundsOf(scene.selected) }),
     undo_redo: ({ action }) => {
       if (action !== 'undo' && action !== 'redo') throw new Error('action must be undo or redo.');
@@ -62,13 +63,13 @@ export function editorMcp(scene, editor) {
     },
     export_structure: ({ format }) => {
       if (!scene.blocks.size) throw new Error('Place blocks in the scene before exporting.');
-      return { data: encodeBase64(encodeStructure(scene.snapshot(), format)) };
+      return saveStructureFile(scene.snapshot(), null, format, false, { preserveOrigin: false });
     },
   };
   return async (name, args) => {
     if (!Object.hasOwn(handlers, name)) throw new Error(`Unknown tool ${name}`);
     const result = await handlers[name](args);
-    if (['set_blocks', 'fill_box', 'remove_box', 'transform_selection'].includes(name)) editor.status('MCP 修改了场景');
+    if (['set_blocks', 'fill_box', 'remove_box', 'paste_selection', 'transform_selection'].includes(name)) editor.status('MCP 修改了场景');
     return result;
   };
 }

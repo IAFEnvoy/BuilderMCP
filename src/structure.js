@@ -1,9 +1,8 @@
 import { gzipSync } from 'fflate';
 import { readNbt, TAG } from './nbt.js';
-import { boundsOf, cellKey, emptyProject, isAir, MAX_BLOCKS, point, stateKey, stateOf } from './scene.js';
+import { boundsOf, cellKey, emptyProject, isAir, MAX_BLOCKS, point, stateKey, stateOf, STRUCTURE_FORMATS } from './scene.js';
 
 const MAX_LITEMATIC_VOLUME = 16_000_000;
-export const STRUCTURE_FORMATS = ['nbt', 'litematic'];
 
 class NbtWriter {
   buffer = new ArrayBuffer(4096);
@@ -173,10 +172,12 @@ const isVector = value => Array.isArray(value) && value.length === 3 && value.ev
 function readPalette(list) {
   if (!Array.isArray(list)) throw new Error('结构文件缺少有效的方块调色板。');
   return list.map(entry => {
-    if (!isCompound(entry) || (entry.Properties !== undefined && !isCompound(entry.Properties))) {
+    const name = entry?.Name ?? entry?.id;
+    const properties = entry?.Name === undefined ? entry?.properties : entry.Properties;
+    if (!isCompound(entry) || (properties !== undefined && !isCompound(properties))) {
       throw new Error('方块调色板包含无效的状态。');
     }
-    return stateOf({ name: entry.Name, properties: entry.Properties });
+    return stateOf({ name, properties });
   });
 }
 

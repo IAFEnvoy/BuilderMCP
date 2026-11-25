@@ -1,5 +1,3 @@
-use crate::{documents::write_document, file_io};
-use base64::{Engine, engine::general_purpose::STANDARD};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
@@ -16,7 +14,6 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, TcpListener},
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -41,7 +38,6 @@ pub struct Bridge {
     ready: AtomicBool,
     pending: Mutex<HashMap<Uuid, oneshot::Sender<Reply>>>,
     status: Mutex<McpStatus>,
-    exports: PathBuf,
 }
 
 struct Pending<'a> {
@@ -84,27 +80,6 @@ impl Bridge {
             .map_err(|_| "The editor did not respond within 30 seconds.")?
             .map_err(|_| "The editor closed before responding.")?
     }
-
-    async fn save_export(&self, format: &str, value: Value) -> Reply {
-        if !["nbt", "litematic"].contains(&format) {
-            return Err("Unsupported export format.".into());
-        }
-        let bytes = value
-            .get("data")
-            .and_then(Value::as_str)
-            .ok_or("The editor returned no export data.")?;
-        let bytes = STANDARD.decode(bytes).map_err(|error| error.to_string())?;
-        tokio::fs::create_dir_all(&self.exports)
-            .await
-            .map_err(|error| error.to_string())?;
-        let path = self
-            .exports
-            .join(format!("build-{}.{format}", Uuid::new_v4()));
-        let output = path.clone();
-        let size = bytes.len();
-        file_io(move || write_document(&output, &bytes, false)).await?;
-        Ok(json!({ "path": path, "format": format, "bytes": size }))
-    }
 }
 
 #[derive(Clone)]
@@ -144,7 +119,7 @@ impl ServerHandler for McpServer {
             ));
         }
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let reply = self.bridge.request(name, args.clone()).await;
+        let reply = self.bridge.request(name, args).await;
         let result = match (name, reply) {
             ("capture_screenshot", Ok(value)) => match value.get("data").and_then(Value::as_str) {
                 Some(data) => Ok(CallToolResult::success(vec![ContentBlock::image(
@@ -171,16 +146,6 @@ impl ServerHandler for McpServer {
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .map(CallToolResult::success),
-            ("export_structure", Ok(value)) => self
-                .bridge
-                .save_export(
-                    args.get("format")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                    value,
-                )
-                .await
-                .map(CallToolResult::structured),
             (_, reply) => reply.map(CallToolResult::structured),
         };
         Ok(result
@@ -205,7 +170,7 @@ fn load_tools() -> Arc<Vec<Tool>> {
     Arc::new(tools)
 }
 
-pub fn start(app: AppHandle, exports: PathBuf) -> Arc<Bridge> {
+pub fn start(app: AppHandle) -> Arc<Bridge> {
     let port = std::env::var("BUILDER_MCP_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
@@ -223,7 +188,6 @@ pub fn start(app: AppHandle, exports: PathBuf) -> Arc<Bridge> {
             url: format!("http://127.0.0.1:{port}/mcp"),
             error: listener.as_ref().err().map(ToString::to_string),
         }),
-        exports,
     });
     if let Ok(listener) = listener {
         let server = McpServer {

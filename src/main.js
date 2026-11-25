@@ -1,21 +1,20 @@
 import {
-  ArrowDown, ArrowUp, Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, Copy, Cuboid,
+  ArrowDown, ArrowUp, Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, ClipboardPaste, Copy, Cuboid,
   Download, Eraser, FileBox, FilePlus, FolderOpen, Grid3x3, Languages, Layers, Mouse, MousePointer2,
   Move3d, Package, PackagePlus, PaintBucket, Pipette, Plus, Redo2, RotateCcw, RotateCw,
-  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, Trash2, Undo2, X, createElement,
+  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
 } from 'lucide';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './styles.css';
 import {
   connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, openProject, PACK_ARCHIVE_FORMATS,
-  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureFile, structureFileInfo,
+  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureAs, saveStructureFile, structureFileInfo,
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, LOCALE_KEY, localeName, normalizeLocale } from './locales.js';
 import { ModelPreview } from './model-preview.js';
 import { BlockCatalog, loadArchive } from './resource-pack.js';
-import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint } from './scene.js';
-import { decodeStructure, encodeStructure, STRUCTURE_FORMATS } from './structure.js';
+import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint, STRUCTURE_FORMATS } from './scene.js';
 import { drawCompass, Viewport } from './viewport.js';
 
 const byId = id => document.getElementById(id);
@@ -30,12 +29,13 @@ const modelPreview = new ModelPreview();
 const icons = {
   'arrow-down': ArrowDown, 'arrow-up': ArrowUp,
   box: Box, boxes: Boxes, 'box-select': BoxSelect, camera: Camera, check: Check, 'chevron-down': ChevronDown,
-  'circle-alert': CircleAlert, 'circle-help': CircleHelp, copy: Copy, cuboid: Cuboid, download: Download,
+  'circle-alert': CircleAlert, 'circle-help': CircleHelp, 'clipboard-paste': ClipboardPaste, copy: Copy, cuboid: Cuboid, download: Download,
   eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-open': FolderOpen, 'grid-3x3': Grid3x3,
   languages: Languages, layers: Layers, mouse: Mouse, 'mouse-pointer-2': MousePointer2, 'move-3d': Move3d, package: Package,
   'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, plus: Plus, 'redo-2': Redo2,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
-  'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, 'trash-2': Trash2, 'undo-2': Undo2, x: X,
+  'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
+  'trash-2': Trash2, 'undo-2': Undo2, x: X,
 };
 
 function icon(name) {
@@ -78,6 +78,7 @@ const tools = {
   box: '点击区域选区的第一个角点',
   fill: '点击填充区域的第一个角点',
   pick: '点击吸取方块及其状态',
+  paste: '左键确认粘贴，Esc 取消',
 };
 
 function status(message) {
@@ -277,6 +278,7 @@ function updateScene(change = {}) {
     byId('select-all').disabled = !build.blocks.size;
   }
   byId('selection-count').textContent = build.selection.size.toLocaleString();
+  byId('copy-selection').disabled = !build.selection.size;
   byId('selection-empty').hidden = Boolean(build.selection.size);
   byId('transform').hidden = !build.selection.size;
   const bounds = boundsOf(build.selected);
@@ -294,11 +296,26 @@ function frame(preset = currentPreset ?? 'isometric') {
 }
 
 function hover(hit) {
-  const placing = tool === 'place';
+  const placing = tool === 'place' || tool === 'paste';
   const region = tool === 'box' || tool === 'fill';
   const pos = placing ? hit?.place : region ? hit?.cell ?? hit?.place : hit?.cell;
   byId('cursor-position').textContent = pos ? `X ${pos[0]}   Y ${pos[1]}   Z ${pos[2]}` : 'X —   Y —   Z —';
+  if (tool === 'paste' && pos) {
+    const size = build.clipboardSize;
+    const end = pos.map((n, axis) => n + size[axis] - 1);
+    const fits = [pos, end].every(corner => corner.every(n => Math.abs(n) <= MAX_COORDINATE));
+    viewport.setHover(pos, end, fits ? '#a5e191' : '#ef938b');
+    return;
+  }
   viewport.setHover(firstCorner ?? pos, pos, tool === 'erase' ? '#ef938b' : '#ffd28b');
+}
+
+function copySelection() {
+  const copied = build.copySelection();
+  byId('paste-selection').disabled = !viewport;
+  viewport?.invalidate();
+  toast(`已复制 ${copied.count.toLocaleString()} 个方块`);
+  return copied;
 }
 
 function clickScene(hit, event) {
@@ -315,6 +332,12 @@ function clickScene(hit, event) {
       return;
     }
     if (!hit) return;
+    if (tool === 'paste') {
+      const changes = build.pasteSelection(hit.place);
+      toggleTool('select');
+      status(changes ? `粘贴更新了 ${changes.toLocaleString()} 个方块` : '目标位置已有相同方块');
+      return;
+    }
     if (tool === 'place') build.setBlocks([{ pos: hit.place, state: brush }]);
     if (tool === 'erase' && hit.cell) build.setBlocks([{ pos: hit.cell, state: null }]);
     if (tool === 'pick' && hit.cell) {
@@ -410,6 +433,7 @@ function projectInfo() {
 
 function setProject(project, file = null) {
   build.load(project);
+  if (tool === 'paste') toggleTool('select');
   currentFile = file;
   savedRevision = build.revision;
   firstCorner = null;
@@ -436,23 +460,22 @@ function openEditorProject(read) {
   return leaveProject('打开文件', async revision => {
     const file = await read();
     if (!file) return;
-    const project = await decodeStructure(file.bytes, file.format, file.name);
     if (build.revision !== revision && isProjectDirty()) throw new Error('打开文件期间项目有新的修改，请重新打开文件。');
-    return showOpenedProject(project, file);
+    return showOpenedProject(file.project, file);
   });
 }
 
-async function writeProject(format, write) {
+async function writeProject(write) {
   const revision = build.revision;
   const snapshot = build.snapshot();
-  const bytes = encodeStructure(snapshot, format, { preserveOrigin: true });
-  const path = await write(bytes, safeFilename(snapshot.name));
-  if (!path) return null;
+  const saved = await write(snapshot);
+  if (!saved) return null;
+  const { path, format } = saved;
   currentFile = { path: desktop ? path : null, format };
   savedRevision = revision;
   updateScene();
   toast('已保存 .' + format);
-  return { path, format, bytes: bytes.length, blockCount: snapshot.blocks.length };
+  return { ...saved, blockCount: snapshot.blocks.length };
 }
 
 async function saveCurrentProject(asFormat) {
@@ -463,9 +486,9 @@ async function saveCurrentProject(asFormat) {
   }
   setSaveMenu(false);
   const path = asFormat ? null : currentFile.path;
-  return writeProject(format, (bytes, name) => path
-    ? saveStructureFile(bytes, path, format, true)
-    : saveFile(bytes, name, format));
+  return writeProject(project => path
+    ? saveStructureFile(project, path, format, true)
+    : saveStructureAs(project, safeFilename(project.name), format));
 }
 
 function saveProject(asFormat) {
@@ -484,7 +507,7 @@ function saveMcpProject({ path, format, overwrite }) {
     const currentPath = currentFile?.format === selectedFormat ? currentFile.path : null;
     const target = path ?? currentPath;
     const replace = overwrite ?? (path === undefined && Boolean(target));
-    return writeProject(selectedFormat, bytes => saveStructureFile(bytes, target, selectedFormat, replace));
+    return writeProject(project => saveStructureFile(project, target, selectedFormat, replace));
   });
 }
 
@@ -924,6 +947,8 @@ document.addEventListener('click', event => {
 });
 onClick('undo', () => applyHistory('undo'));
 onClick('redo', () => applyHistory('redo'));
+onClick('copy-selection', copySelection);
+onClick('paste-selection', () => toggleTool('paste'));
 onClick('grid-toggle', event => event.currentTarget.setAttribute('aria-pressed', String(viewport?.toggleGrid() ?? false)));
 onClick('frame', () => frame());
 onClick('screenshot', async () => {
@@ -963,6 +988,7 @@ onClick('copy-mcp', async () => {
 });
 
 const fileShortcuts = { n: 'project-new', o: 'project-open', s: 'project-save', 'shift+s': 'save-menu-button' };
+const clipboardShortcuts = { c: 'copy-selection', v: 'paste-selection' };
 
 document.addEventListener('keydown', event => {
   if (event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]')) return;
@@ -973,6 +999,11 @@ document.addEventListener('keydown', event => {
     if (Object.hasOwn(fileShortcuts, chord)) {
       event.preventDefault();
       if (!event.repeat) byId(fileShortcuts[chord]).click();
+    } else if (!editing && Object.hasOwn(clipboardShortcuts, chord)) {
+      const button = byId(clipboardShortcuts[chord]);
+      if (button.disabled || (chord === 'c' && window.getSelection()?.isCollapsed === false)) return;
+      event.preventDefault();
+      if (!event.repeat) button.click();
     } else if (!editing && ['z', 'shift+z', 'y'].includes(chord)) {
       event.preventDefault();
       applyHistory(chord === 'z' ? 'undo' : 'redo');
@@ -983,12 +1014,23 @@ document.addEventListener('keydown', event => {
     }
     return;
   }
+  if (key === 'escape' && !event.altKey && !event.repeat) {
+    if (tool === 'paste') {
+      setSaveMenu(false);
+      toggleTool('select');
+    } else if (!editing) {
+      firstCorner = null;
+      setSaveMenu(false);
+      build.select([]);
+      status(tools[tool]);
+    }
+    return;
+  }
   if (editing || event.altKey) return;
   const shortcut = { v: 'select', p: 'place', e: 'erase', b: 'box', g: 'fill', i: 'pick' };
   if (shortcut[key]) toggleTool(shortcut[key]);
   if (key === 'f') frame();
   if (key === 'delete') build.removeSelection();
-  if (key === 'escape') { firstCorner = null; setSaveMenu(false); build.select([]); status(tools[tool]); }
   if (key === '/') { event.preventDefault(); byId('palette-search').focus(); }
 });
 
@@ -1021,6 +1063,7 @@ if (desktop) {
     const editor = {
       projectInfo,
       applyHistory,
+      copySelection,
       newProject: ({ name, data_version, discard_unsaved }) => projectAction(() => {
         requireSavedProject(discard_unsaved);
         return newProject(name, data_version);
@@ -1028,9 +1071,8 @@ if (desktop) {
       openProject: ({ path, discard_unsaved }) => projectAction(async () => {
         requireSavedProject(discard_unsaved);
         const file = await readStructureFile(path);
-        const project = await decodeStructure(file.bytes, file.format, file.name);
         requireSavedProject(discard_unsaved);
-        return showOpenedProject(project, file);
+        return showOpenedProject(file.project, file);
       }),
       saveProject: saveMcpProject,
       cameraInfo: () => viewport?.cameraInfo() ?? null,

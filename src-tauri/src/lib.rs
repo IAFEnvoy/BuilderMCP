@@ -2,6 +2,7 @@ mod documents;
 mod mcp;
 mod minecraft_languages;
 mod packs;
+mod structures;
 
 use minecraft_languages::MinecraftLanguages;
 use packs::{PackInfo, PackStore};
@@ -65,7 +66,7 @@ pub fn run() {
                 app.path().home_dir().ok(),
                 app.path().data_dir().ok(),
             ));
-            app.manage(mcp::start(app.handle().clone(), data.join("exports")));
+            app.manage(mcp::start(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

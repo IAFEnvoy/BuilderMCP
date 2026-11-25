@@ -92,6 +92,18 @@
       } }
     },
     {
+      "name": "copy_selection", "description": "Copy the currently selected blocks to the editor's clipboard. Returns the number of copied blocks and the bounding box dimensions [width, height, depth].",
+      "annotations": { "destructiveHint": false, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false }
+    },
+    {
+      "name": "paste_selection", "description": "Paste the clipboard with its minimum corner at origin and select the pasted blocks. Copied blocks replace any blocks at their destination cells. Empty cells in the copy leave the destination intact. Undo reverts a paste in one step.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["origin"], "additionalProperties": false, "properties": {
+        "origin": { "$ref": "#/$defs/cell" }
+      } }
+    },
+    {
       "name": "transform_selection", "description": "Move, rotate about the Y axis clockwise as viewed from above, and resize the current selection. Rotation precedes resizing. The minimum corner stays fixed unless origin is specified. Cells outside the selection are preserved.",
       "annotations": { "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {

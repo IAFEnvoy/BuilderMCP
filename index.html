@@ -57,6 +57,9 @@
             <button class="icon-button" id="undo" title="撤销 (Ctrl+Z)" aria-label="撤销" aria-keyshortcuts="Control+z" disabled><i data-icon="undo-2"></i></button>
             <button class="icon-button" id="redo" title="重做 (Ctrl+Y 或 Ctrl+Shift+Z)" aria-label="重做" aria-keyshortcuts="Control+y Control+Shift+z" disabled><i data-icon="redo-2"></i></button>
             <span class="toolbar-divider"></span>
+            <button class="icon-button" id="copy-selection" title="复制选区 (Ctrl+C)" aria-label="复制选区" aria-keyshortcuts="Control+c Meta+c" disabled><i data-icon="copy"></i></button>
+            <button class="icon-button" id="paste-selection" data-tool="paste" title="粘贴选区 (Ctrl+V)" aria-label="粘贴选区" aria-keyshortcuts="Control+v Meta+v" aria-pressed="false" disabled><i data-icon="clipboard-paste"></i></button>
+            <span class="toolbar-divider"></span>
             <button class="icon-button" id="grid-toggle" title="显示网格" aria-label="显示网格" aria-pressed="true"><i data-icon="grid-3x3"></i></button>
             <button class="icon-button" id="frame" title="聚焦建筑 (F)" aria-label="聚焦建筑"><i data-icon="scan"></i></button>
             <button class="icon-button" id="screenshot" title="保存视图截图" aria-label="保存视图截图"><i data-icon="camera"></i></button>
@@ -69,7 +72,7 @@
             <button data-tool="place" class="icon-button" title="放置 (P)" aria-label="放置" aria-pressed="false" disabled><i data-icon="plus"></i></button>
             <button data-tool="erase" class="icon-button" title="擦除 (E)" aria-label="擦除" aria-pressed="false"><i data-icon="eraser"></i></button>
             <span class="tool-divider"></span>
-            <button data-tool="box" class="icon-button" title="区域选取 (B)" aria-label="区域选取" aria-pressed="false"><i data-icon="scan-line"></i></button>
+            <button data-tool="box" class="icon-button" title="区域选取 (B)" aria-label="区域选取" aria-pressed="false"><i data-icon="square-dashed-mouse-pointer"></i></button>
             <button data-tool="fill" class="icon-button" title="区域填充 (G)" aria-label="区域填充" aria-pressed="false" disabled><i data-icon="paint-bucket"></i></button>
             <button data-tool="pick" class="icon-button" title="吸取方块 (I)" aria-label="吸取方块" aria-pressed="false"><i data-icon="pipette"></i></button>
           </div>
@@ -195,6 +198,7 @@
         <div><dt>选取 / 多选</dt><dd><kbd>V</kbd><kbd>Shift</kbd> + 点击</dd></div>
         <div><dt>放置 / 擦除 / 吸取</dt><dd><kbd>P</kbd><kbd>E</kbd><kbd>I</kbd></dd></div>
         <div><dt>区域选取 / 填充</dt><dd><kbd>B</kbd><kbd>G</kbd></dd></div>
+        <div><dt>复制 / 粘贴选区</dt><dd><kbd>Ctrl+C</kbd><kbd>Ctrl+V</kbd></dd></div>
         <div><dt>全选 / 删除选区</dt><dd><kbd>Ctrl+A</kbd><kbd>Del</kbd></dd></div>
         <div><dt>聚焦 / 搜索</dt><dd><kbd>F</kbd><kbd>/</kbd></dd></div>
         <div><dt>撤销</dt><dd><kbd>Ctrl+Z</kbd></dd></div>

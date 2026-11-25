@@ -1,17 +1,33 @@
-use crate::file_io;
+use crate::{
+    file_io,
+    structures::{self, MAX_STRUCTURE_BYTES, Structure, StructureFormat},
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::Serialize;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
-use tauri::{AppHandle, Manager, ipc::Response};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
 use uuid::Uuid;
 
-const MAX_STRUCTURE_BYTES: u64 = 128 * 1024 * 1024;
+#[derive(Serialize)]
+pub struct OpenedStructure {
+    path: PathBuf,
+    format: StructureFormat,
+    project: Structure,
+}
 
-fn structure_format(path: &Path) -> Result<&'static str, String> {
+#[derive(Serialize)]
+pub struct SavedStructure {
+    path: PathBuf,
+    format: StructureFormat,
+    bytes: usize,
+}
+
+fn structure_format(path: &Path) -> Result<StructureFormat, String> {
     if !path.is_absolute() {
         return Err("Provide an absolute path on the machine running Builder MCP.".into());
     }
@@ -21,8 +37,8 @@ fn structure_format(path: &Path) -> Result<&'static str, String> {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("nbt") => Ok("nbt"),
-        Some("litematic") => Ok("litematic"),
+        Some("nbt") => Ok(StructureFormat::Nbt),
+        Some("litematic") => Ok(StructureFormat::Litematic),
         _ => Err("Choose a .nbt or .litematic file.".into()),
     }
 }
@@ -61,24 +77,30 @@ pub async fn save_document(app: AppHandle, path: PathBuf, data: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn read_structure_file(path: PathBuf) -> Result<Response, String> {
-    structure_format(&path)?;
+pub async fn read_structure_file(path: PathBuf) -> Result<OpenedStructure, String> {
+    let format = structure_format(&path)?;
     file_io(move || {
         let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
         if !metadata.is_file() {
             return Err("The structure path must point to a file.".into());
         }
-        if metadata.len() > MAX_STRUCTURE_BYTES {
+        if metadata.len() > MAX_STRUCTURE_BYTES as u64 {
             return Err("The structure file exceeds 128 MiB.".into());
         }
         let mut bytes = Vec::new();
-        File::open(path)
-            .and_then(|file| file.take(MAX_STRUCTURE_BYTES + 1).read_to_end(&mut bytes))
+        File::open(&path)
+            .and_then(|file| {
+                file.take(MAX_STRUCTURE_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
             .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 > MAX_STRUCTURE_BYTES {
-            return Err("The structure file exceeds 128 MiB.".into());
-        }
-        Ok(Response::new(bytes))
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let project = structures::decode(&bytes, format, &name)?;
+        Ok(OpenedStructure {
+            path,
+            format,
+            project,
+        })
     })
     .await
 }
@@ -87,13 +109,11 @@ pub async fn read_structure_file(path: PathBuf) -> Result<Response, String> {
 pub async fn save_structure_file(
     app: AppHandle,
     path: Option<PathBuf>,
-    format: String,
-    data: String,
+    format: StructureFormat,
+    project: Structure,
     overwrite: bool,
-) -> Result<PathBuf, String> {
-    if !["nbt", "litematic"].contains(&format.as_str()) {
-        return Err("Choose nbt or litematic.".into());
-    }
+    preserve_origin: bool,
+) -> Result<SavedStructure, String> {
     let generate_path = path.is_none();
     let path = match path {
         Some(path) if structure_format(&path)? == format => path,
@@ -105,16 +125,20 @@ pub async fn save_structure_file(
             .app_data_dir()
             .map_err(|error| error.to_string())?
             .join("exports")
-            .join(format!("build-{}.{format}", Uuid::new_v4())),
+            .join(format!("build-{}.{}", Uuid::new_v4(), format.extension())),
     };
     file_io(move || {
+        let bytes = structures::encode(&project, format, preserve_origin)?;
         if generate_path {
             fs::create_dir_all(path.parent().ok_or("Invalid save path.")?)
                 .map_err(|error| error.to_string())?;
         }
-        let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
         write_document(&path, &bytes, overwrite && !generate_path)?;
-        Ok(path)
+        Ok(SavedStructure {
+            path,
+            format,
+            bytes: bytes.len(),
+        })
     })
     .await
 }

@@ -22,6 +22,7 @@ npm run tauri dev
 - 在方块库用 Mod ID 下拉框按方块 ID 的命名空间筛选，也可以同时搜索名称或资源 ID、选择类别。点击方块可切换画笔，检查器可修改朝向、轴向或半砖位置等方块状态。
 - 左键使用当前工具，中键拖动旋转视角，右键拖动平移，滚轮缩放。底部可输入铺设方块的工作层 Y 坐标。
 - 用选取工具点击方块，按住 Shift 多选。用区域选取或填充工具标记两个角点。检查器可移动选区原点、绕 Y 轴旋转 90°，或把选区缩放到三个轴的整数尺寸。
+- 选中方块后用 `Ctrl+C` 复制，按 `Ctrl+V` 显示粘贴预览，再点击视口放置。`Esc` 取消预览。粘贴以选区包围盒的最小角为原点，复制的方块会覆盖对应位置，空格会保留目标方块。整次粘贴可以撤销，剪贴板可在同一窗口内重复使用或跨项目使用。
 - 保存 `.litematic` 时保留场景坐标。保存 `.nbt` 时，有负坐标的轴会平移到从 0 开始。实体和方块实体的附加数据会跳过。项目设置默认使用 Minecraft Java 1.21.1 的 DataVersion 3955，可按目标游戏版本修改。
 
 ## 全局资源包
@@ -62,11 +63,14 @@ npm run tauri dev
 | 读取场景、方块及状态 | `get_scene`、`list_blocks`、`search_palette` |
 | 放置、替换、填充、删除 | `set_blocks`、`fill_box`、`remove_box` |
 | 选区、移动、旋转、缩放和撤销 | `select_box`、`transform_selection`、`undo_redo` |
+| 复制和粘贴选区 | `copy_selection`、`paste_selection` |
 | 相机和截图 | `set_camera`、`capture_screenshot` |
 | 预览方块状态 | `render_block_states` |
 | 导出建筑 | `export_structure` |
 
 `search_palette` 可传 `"mod_id": "minecraft"` 只查原版方块，也可以同时传 `query` 搜索名称。
+
+调用 `select_box` 和 `copy_selection` 后，向 `paste_selection` 传入目标 `origin` 即可放置副本。MCP 和编辑器共用剪贴板。
 
 流水化制作可以依次调用 `new_project`、放置方块和 `save_project`，再用 `open_project` 打开返回的路径。`open_project` 和 `save_project` 接受运行编辑器的机器上的绝对路径。省略保存路径时会更新当前文件，首次保存则在应用数据目录的 `exports` 下生成文件，默认使用 `.litematic`。
 

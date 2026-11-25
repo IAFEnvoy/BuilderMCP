@@ -1,8 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { readFile } from '@tauri-apps/plugin-fs';
-import { STRUCTURE_FORMATS } from './structure.js';
+import { STRUCTURE_FORMATS } from './scene.js';
 
 export const desktop = isTauri();
 export const PACK_ARCHIVE_FORMATS = ['zip', 'jar'];
@@ -32,13 +31,16 @@ export function structureFileInfo(path) {
 }
 
 export async function readBrowserStructureFile(file) {
-  return { path: null, ...structureFileInfo(file.name), bytes: new Uint8Array(await file.arrayBuffer()) };
+  const { name, format } = structureFileInfo(file.name);
+  const { decodeStructure } = await import('./structure.js');
+  const project = await decodeStructure(new Uint8Array(await file.arrayBuffer()), format, name);
+  return { path: null, format, project };
 }
 
 export async function openProject() {
   if (desktop) {
     const path = await open({ filters: [{ name: 'Minecraft 结构和 Litematica 投影', extensions: STRUCTURE_FORMATS }] });
-    return path ? { path, ...structureFileInfo(path), bytes: await readFile(path) } : null;
+    return path ? readStructureFile(path) : null;
   }
   const file = await new Promise(resolve => {
     const input = document.createElement('input');
@@ -51,16 +53,11 @@ export async function openProject() {
   return file ? readBrowserStructureFile(file) : null;
 }
 
-export async function saveFile(bytes, name, extension) {
-  if (desktop) {
-    const path = await save({ defaultPath: `${name}.${extension}`, filters: [{ name: types[extension], extensions: [extension] }] });
-    if (!path) return null;
-    if (STRUCTURE_FORMATS.includes(extension) && structureFileInfo(path).format !== extension) {
-      throw new Error('文件扩展名需要与保存格式一致。');
-    }
-    await invoke('save_document', { path, data: encodeBase64(bytes) });
-    return path;
-  }
+function chooseSavePath(name, extension) {
+  return save({ defaultPath: `${name}.${extension}`, filters: [{ name: types[extension], extensions: [extension] }] });
+}
+
+function downloadFile(bytes, name, extension) {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
   const link = document.createElement('a');
   link.href = url;
@@ -70,14 +67,34 @@ export async function saveFile(bytes, name, extension) {
   return link.download;
 }
 
-export async function readStructureFile(path) {
-  const info = structureFileInfo(path);
-  const bytes = new Uint8Array(await invoke('read_structure_file', { path }));
-  return { path, ...info, bytes };
+export async function saveFile(bytes, name, extension) {
+  if (!desktop) return downloadFile(bytes, name, extension);
+  const path = await chooseSavePath(name, extension);
+  if (!path) return null;
+  await invoke('save_document', { path, data: encodeBase64(bytes) });
+  return path;
 }
 
-export function saveStructureFile(bytes, path, format, overwrite) {
-  return invoke('save_structure_file', { path, format, overwrite, data: encodeBase64(bytes) });
+export function readStructureFile(path) {
+  structureFileInfo(path);
+  return invoke('read_structure_file', { path });
+}
+
+export function saveStructureFile(project, path, format, overwrite, { preserveOrigin = true } = {}) {
+  return invoke('save_structure_file', { path, format, overwrite, preserveOrigin, project });
+}
+
+export async function saveStructureAs(project, name, format) {
+  if (desktop) {
+    const path = await chooseSavePath(name, format);
+    if (!path) return null;
+    if (structureFileInfo(path).format !== format) throw new Error('文件扩展名需要与保存格式一致。');
+    return saveStructureFile(project, path, format, true);
+  }
+  const { encodeStructure } = await import('./structure.js');
+  const bytes = encodeStructure(project, format, { preserveOrigin: true });
+  const path = downloadFile(bytes, name, format);
+  return { path, format, bytes: bytes.length };
 }
 
 export const packsOnDisk = {

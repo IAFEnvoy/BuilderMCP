@@ -1,4 +1,5 @@
 export const DEFAULT_DATA_VERSION = 3955; // Java Edition 1.21.1
+export const STRUCTURE_FORMATS = ['nbt', 'litematic'];
 export const MAX_BLOCKS = 200_000;
 export const MAX_COORDINATE = 1_000_000;
 const MAX_FILL_VOLUME = 2_000_000;
@@ -99,6 +100,7 @@ function projectMetadata(name, dataVersion) {
 }
 
 export class BuildScene {
+  #clipboard = null;
   blocks = new Map();
   selection = new Set();
   listeners = new Set();
@@ -144,6 +146,7 @@ export class BuildScene {
 
   get bounds() { return boundsOf(this.blocks.values()); }
   get selected() { return [...this.selection].map(key => this.blocks.get(key)).filter(Boolean); }
+  get clipboardSize() { return this.#clipboard?.size.slice() ?? null; }
 
   select(keys) {
     this.selection = new Set([...keys].filter(key => this.blocks.has(key)));
@@ -156,6 +159,33 @@ export class BuildScene {
     const keys = [];
     for (const [key, { pos }] of this.blocks) if (inBox(pos, box)) keys.push(key);
     return this.select(keys);
+  }
+
+  copySelection() {
+    const selected = this.selected;
+    const bounds = boundsOf(selected);
+    if (!bounds) throw new Error('请先选择要复制的方块。');
+
+    const blocks = structuredClone(selected);
+    for (const block of blocks) block.pos = block.pos.map((n, axis) => n - bounds.min[axis]);
+    this.#clipboard = { blocks, size: bounds.size };
+    return { count: blocks.length, size: this.clipboardSize };
+  }
+
+  pasteSelection(origin) {
+    if (!this.#clipboard) throw new Error('请先复制选区。');
+    const { blocks, size } = this.#clipboard;
+    const target = point(origin, '粘贴原点');
+    point(target.map((n, axis) => n + size[axis] - 1), '粘贴末端');
+
+    const updates = new Map();
+    for (const { pos: offset, state } of blocks) {
+      const pos = target.map((n, axis) => n + offset[axis]);
+      updates.set(cellKey(pos), { pos, state });
+    }
+    const changes = this.apply(updates, updates.keys());
+    if (!changes) this.select(updates.keys());
+    return changes;
   }
 
   setMetadata(name, dataVersion) {
