@@ -31,7 +31,7 @@ jobs:
     uses: ./.github/workflows/build.yml
 
   publish:
-    name: Publish installers
+    name: Publish executables
     needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
@@ -44,6 +44,7 @@ jobs:
         with:
           pattern: tauri-build-*
           path: artifacts
+          merge-multiple: true
       - name: Create GitHub release
         shell: bash
         env:
@@ -57,17 +58,17 @@ jobs:
             exit 1
           fi
 
-          shopt -s nullglob
-          assets=()
-          for platform in windows macos-x86_64 macos-arm64 linux; do
-            bundle="artifacts/tauri-build-$platform"
-            installers=("$bundle"/msi/*.msi "$bundle"/nsis/*-setup.exe "$bundle"/dmg/*.dmg
-              "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage)
-            if (( ${#installers[@]} == 0 )); then
-              echo "::error::No installers found for $platform."
+          assets=(
+            artifacts/buildermcp-x86_64-pc-windows-msvc.exe
+            artifacts/buildermcp-x86_64-apple-darwin.tar.gz
+            artifacts/buildermcp-aarch64-apple-darwin.tar.gz
+            artifacts/buildermcp-x86_64-unknown-linux-gnu.tar.gz
+          )
+          for asset in "${assets[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "::error::Missing executable asset $asset."
               exit 1
             fi
-            assets+=("${installers[@]}")
           done
 
           flags=()

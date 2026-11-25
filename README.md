@@ -15,7 +15,7 @@ npm run tauri dev
 
 ## 发布
 
-在 GitHub 的 **Actions → Publish Release → Run workflow** 手动发布。流程从 `src-tauri/Cargo.toml` 读取版本，构建 Windows、Linux 和两种 macOS 架构的安装包，然后发布到 `v<版本号>` 并生成 Release 说明。
+在 GitHub 的 **Actions → Publish Release → Run workflow** 手动发布。流程从 `src-tauri/Cargo.toml` 读取版本，构建 Windows x64、Linux x64、macOS Intel 和 Apple Silicon 的可执行文件，再发布到 `v<版本号>` 并生成 Release 说明。Windows 提供 `.exe`，Linux 和 macOS 各自的 `.tar.gz` 内含可执行文件并保留执行权限。
 
 ## 编辑建筑
 
