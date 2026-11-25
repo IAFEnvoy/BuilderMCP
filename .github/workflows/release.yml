@@ -1,0 +1,78 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Read Cargo version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.cargo.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read package version
+        id: cargo
+        shell: bash
+        run: |
+          version=$(cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 |
+            jq -er '.packages[] | select(.name == "buildermcp") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    name: Publish installers
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-build-*
+          path: artifacts
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          tag="v$RELEASE_VERSION"
+          tag_ref="refs/tags/$tag"
+          if git show-ref --verify --quiet "$tag_ref" && [[ "$(git rev-parse "$tag_ref^{commit}")" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $tag already points to a different commit."
+            exit 1
+          fi
+
+          shopt -s nullglob
+          assets=()
+          for platform in windows macos-x86_64 macos-arm64 linux; do
+            bundle="artifacts/tauri-build-$platform"
+            installers=("$bundle"/msi/*.msi "$bundle"/nsis/*-setup.exe "$bundle"/dmg/*.dmg
+              "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage)
+            if (( ${#installers[@]} == 0 )); then
+              echo "::error::No installers found for $platform."
+              exit 1
+            fi
+            assets+=("${installers[@]}")
+          done
+
+          flags=()
+          if [[ "${RELEASE_VERSION%%+*}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" \
+            --title "Builder MCP $tag" --generate-notes "${flags[@]}"

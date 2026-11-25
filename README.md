@@ -13,6 +13,10 @@ npm run tauri dev
 
 用 `npm run tauri build` 构建桌面程序和安装包。只构建可执行文件时，运行 `npm run tauri build -- --no-bundle`。
 
+## 发布
+
+在 GitHub 的 **Actions → Publish Release → Run workflow** 手动发布。流程从 `src-tauri/Cargo.toml` 读取版本，构建 Windows、Linux 和两种 macOS 架构的安装包，然后发布到 `v<版本号>` 并生成 Release 说明。
+
 ## 编辑建筑
 
 - 启动时画布为空，导入的全局资源包会自动加载到方块库。点「新建」可开始另一座建筑。
