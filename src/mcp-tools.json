@@ -119,23 +119,32 @@
       } }
     },
     {
-      "name": "set_camera", "description": "Frame the current project using a preset, or set an explicit camera position and target. Returns the resulting camera state.",
+      "name": "set_camera", "description": "Switch projection or set a camera pose. The isometric preset uses orthographic projection by default. Returns the camera position, target, projection and its field of view or orthographic height.",
       "annotations": { "destructiveHint": false, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
-        "preset": { "enum": ["isometric", "front", "right", "top"] }, "position": { "$ref": "#/$defs/vector" }, "target": { "$ref": "#/$defs/vector" }
-      }, "oneOf": [{ "required": ["preset"], "not": { "anyOf": [{ "required": ["position"] }, { "required": ["target"] }] } }, { "required": ["position", "target"], "not": { "required": ["preset"] } }] }
+        "preset": { "enum": ["angled", "isometric", "front", "right", "top"] },
+        "position": { "$ref": "#/$defs/vector" }, "target": { "$ref": "#/$defs/vector" },
+        "projection": { "enum": ["perspective", "orthographic"], "description": "Switch projection while retaining the direction and apparent scale at the target. Can be combined with a preset or a position and target." }
+      }, "oneOf": [
+        { "required": ["preset"], "not": { "anyOf": [{ "required": ["position"] }, { "required": ["target"] }] } },
+        { "required": ["position", "target"], "not": { "required": ["preset"] } },
+        { "required": ["projection"], "not": { "anyOf": [{ "required": ["preset"] }, { "required": ["position"] }, { "required": ["target"] }] } }
+      ] }
     },
     {
-      "name": "capture_screenshot", "description": "Capture the live Three.js viewport and return a PNG as MCP image content. Optionally limit the width while keeping the aspect ratio.",
+      "name": "capture_screenshot", "description": "Return a PNG using the current camera and viewport aspect ratio. Set transparent to render the building alone on a transparent background.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
-      "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "width": { "type": "integer", "minimum": 256, "maximum": 1920 } } }
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "width": { "type": "integer", "minimum": 256, "maximum": 1920, "description": "Maximum screenshot width or transparent render longest edge. Defaults to 1440." },
+        "transparent": { "type": "boolean", "default": false }
+      } }
     },
     {
       "name": "render_block_states", "description": "Preview placed block models using the active resource packs. Returns one 256×256 PNG with a transparent background per state in input order. Missing block models or textures use a purple and black checkerboard. Air returns an empty image. Uses the default isometric angle unless follow_camera is true. Each image frames its block independently.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["states"], "additionalProperties": false, "properties": {
         "states": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/state" } },
-        "follow_camera": { "type": "boolean", "default": false, "description": "Use the live viewport camera orientation with the block centered in the preview." }
+        "follow_camera": { "type": "boolean", "default": false, "description": "Use the live viewport orientation and projection with the block centered in the preview." }
       } }
     },
     {

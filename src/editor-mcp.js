@@ -48,13 +48,24 @@ export function editorMcp(scene, editor) {
       if (action !== 'undo' && action !== 'redo') throw new Error('action must be undo or redo.');
       return { applied: editor.applyHistory(action), blockCount: scene.blocks.size };
     },
-    set_camera: ({ preset, position, target }) => {
-      if (preset !== undefined && (position !== undefined || target !== undefined)) throw new Error('Choose a preset or an explicit camera position and target.');
-      if (preset === undefined) editor.setCamera(position, target);
-      else editor.frame(preset);
+    set_camera: ({ preset, position, target, projection }) => {
+      const explicitPose = position !== undefined || target !== undefined;
+      if (preset !== undefined) {
+        if (explicitPose) throw new Error('Choose a preset or an explicit camera position and target.');
+        editor.frame(preset, projection);
+      } else if (explicitPose) {
+        editor.setCamera(position, target, projection);
+      } else if (projection !== undefined) {
+        editor.setProjection(projection);
+      } else {
+        throw new Error('Provide a preset, projection, or a camera position and target.');
+      }
       return editor.cameraInfo();
     },
-    capture_screenshot: ({ width }) => editor.capture(width),
+    capture_screenshot: ({ width, transparent = false }) => {
+      if (typeof transparent !== 'boolean') throw new Error('transparent must be a boolean.');
+      return editor.capture(width, { transparent });
+    },
     render_block_states: ({ states, follow_camera = false }) => {
       if (!Array.isArray(states) || states.length < 1 || states.length > 32) throw new Error('Provide a states array with 1–32 entries.');
       if (typeof follow_camera !== 'boolean') throw new Error('follow_camera must be a boolean.');

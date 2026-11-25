@@ -63,6 +63,7 @@
             <button class="icon-button" id="grid-toggle" title="显示网格" aria-label="显示网格" aria-pressed="true"><i data-icon="grid-3x3"></i></button>
             <button class="icon-button" id="frame" title="聚焦建筑 (F)" aria-label="聚焦建筑"><i data-icon="scan"></i></button>
             <button class="icon-button" id="screenshot" title="保存视图截图" aria-label="保存视图截图"><i data-icon="camera"></i></button>
+            <button class="icon-button" id="export-image" title="导出透明 PNG" aria-label="导出透明 PNG" disabled><i data-icon="image-down"></i></button>
           </div>
         </div>
         <div class="viewport" id="viewport">
@@ -78,8 +79,13 @@
           </div>
           <div class="view-widget">
             <canvas id="compass" width="90" height="90" aria-label="坐标轴"></canvas>
-            <div class="view-presets" aria-label="相机视角">
-              <button data-preset="isometric" aria-pressed="true" title="透视">透视</button>
+            <div class="view-presets" role="group" aria-label="相机投影">
+              <button data-projection="perspective" aria-pressed="true" title="透视投影">透视</button>
+              <button data-projection="orthographic" aria-pressed="false" title="正交投影">正交</button>
+            </div>
+            <div class="view-presets" role="group" aria-label="相机预设">
+              <button data-preset="angled" aria-pressed="true" title="斜视">斜视</button>
+              <button data-preset="isometric" aria-pressed="false" title="等轴视角">等轴</button>
               <button data-preset="front" aria-pressed="false" title="南侧正视">正视</button>
               <button data-preset="right" aria-pressed="false" title="东侧侧视">侧视</button>
               <button data-preset="top" aria-pressed="false" title="俯视">俯视</button>

@@ -5,7 +5,15 @@ import { applyTexture, buildGeometry, materialKey, tintFor } from './model-geome
 
 const Y_UP = new THREE.Vector3(0, 1, 0);
 const ZERO = new THREE.Vector3();
-const VIEWS = { isometric: [1.32, 1.02, 1.65], front: [0, 0, 1], right: [1, 0, 0], top: [0, 1, 0.0002] };
+export const DEFAULT_CAMERA_PRESET = 'angled';
+const VIEWS = {
+  angled: [1.32, 1.02, 1.65], isometric: [1, 1, 1],
+  front: [0, 0, 1], right: [1, 0, 0], top: [0, 1, 0.0002],
+};
+const FIELD_OF_VIEW = 35;
+const HALF_FOV_TANGENT = Math.tan(THREE.MathUtils.degToRad(FIELD_OF_VIEW / 2));
+const MIN_CAMERA_DISTANCE = 0.75;
+const MAX_CAMERA_DISTANCE = 4_000_000;
 const chunkKey = pos => pos.map(n => Math.floor(n / 16)).join(',');
 
 function workGrid() {
@@ -75,7 +83,9 @@ export class Viewport {
     this.catalog = catalog;
     this.callbacks = callbacks;
     this.world = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(35, 1, 0.05, 4096);
+    this.perspectiveCamera = new THREE.PerspectiveCamera(FIELD_OF_VIEW, 1, 0.05, 4096);
+    this.orthographicCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 4096);
+    this.camera = this.perspectiveCamera;
     this.camera.position.set(14, 10, 17);
     this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     this.renderer.setClearColor(0x000000, 0);
@@ -87,8 +97,10 @@ export class Viewport {
     this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
     this.controls.enableDamping = false;
     this.controls.zoomToCursor = true;
-    this.controls.minDistance = 0.75;
-    this.controls.maxDistance = 4_000_000;
+    this.controls.minDistance = MIN_CAMERA_DISTANCE;
+    this.controls.maxDistance = MAX_CAMERA_DISTANCE;
+    this.controls.minZoom = 1 / (MAX_CAMERA_DISTANCE * HALF_FOV_TANGENT);
+    this.controls.maxZoom = 1 / (MIN_CAMERA_DISTANCE * HALF_FOV_TANGENT);
     this.controls.addEventListener('change', () => this.invalidate());
     this.controls.addEventListener('start', () => { this.dragging = true; this.hoverOutline.visible = false; this.invalidate(); });
     this.controls.addEventListener('end', () => { this.dragging = false; this.invalidate(); });
@@ -133,15 +145,19 @@ export class Viewport {
     this.observer.observe(host);
     build.onChange(change => this.sceneChanged(change));
     this.rebuild();
-    this.frame('isometric');
+    this.frame(DEFAULT_CAMERA_PRESET);
   }
 
   resize() {
     const width = Math.max(1, this.host.clientWidth);
     const height = Math.max(1, this.host.clientHeight);
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    const aspect = width / height;
+    this.perspectiveCamera.aspect = aspect;
+    this.perspectiveCamera.updateProjectionMatrix();
+    this.orthographicCamera.left = -aspect;
+    this.orthographicCamera.right = aspect;
+    this.orthographicCamera.updateProjectionMatrix();
     this.invalidate();
   }
 
@@ -154,15 +170,23 @@ export class Viewport {
     });
   }
 
-  render() {
-    const distance = this.camera.position.distanceTo(this.controls.target);
-    const near = Math.max(0.025, distance / 1000);
+  updateClippingPlanes(distance = this.controls.getDistance()) {
+    const near = this.camera.isOrthographicCamera ? 0.025 : Math.max(0.025, distance / 1000);
     const far = Math.max(4096, distance * 12);
     if (near !== this.camera.near || far !== this.camera.far) {
       this.camera.near = near;
       this.camera.far = far;
       this.camera.updateProjectionMatrix();
     }
+  }
+
+  get viewDistance() {
+    return this.camera.isOrthographicCamera ? 1 / (this.camera.zoom * HALF_FOV_TANGENT) : this.controls.getDistance();
+  }
+
+  render() {
+    this.updateClippingPlanes();
+    const distance = this.viewDistance;
     this.grid.position.set(this.controls.target.x, this.layer - 0.009, this.controls.target.z);
     this.grid.scale.setScalar(Math.max(25, distance * 1.25));
     this.grid.material.uniforms.anchor.value.set(this.grid.position.x, this.grid.position.z);
@@ -312,29 +336,60 @@ export class Viewport {
       return { cell, place: adjacent };
     }
     const floor = this.raycaster.ray.intersectPlane(this.floor, new THREE.Vector3());
-    if (!floor || floor.distanceTo(this.camera.position) > 350 && floor.distanceTo(this.controls.target) > this.camera.position.distanceTo(this.controls.target) * 2) return null;
+    if (!floor || floor.distanceTo(this.camera.position) > 350 && floor.distanceTo(this.controls.target) > this.viewDistance * 2) return null;
     const place = [Math.floor(floor.x), this.layer, Math.floor(floor.z)];
     return place.every(n => Math.abs(n) <= MAX_COORDINATE) ? { cell: null, place } : null;
   }
 
-  frame(preset) {
+  get projection() {
+    return this.camera.isOrthographicCamera ? 'orthographic' : 'perspective';
+  }
+
+  setProjection(projection) {
+    if (projection !== 'perspective' && projection !== 'orthographic') throw new Error('未知投影方式。');
+    if (projection === this.projection) return;
+
+    // Match the visible height at the orbit target when switching projection.
+    const distance = this.viewDistance;
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const orthographic = projection === 'orthographic';
+    this.camera = orthographic ? this.orthographicCamera : this.perspectiveCamera;
+    this.camera.position.copy(this.controls.target).add(offset.setLength(distance));
+    if (orthographic) this.camera.zoom = 1 / (distance * HALF_FOV_TANGENT);
+    this.camera.updateProjectionMatrix();
+    this.controls.object = this.camera;
+    this.controls.update();
+    this.invalidate();
+  }
+
+  frame(preset, projection = preset === 'isometric' ? 'orthographic' : this.projection) {
     if (!Object.hasOwn(VIEWS, preset)) throw new Error('未知视角。');
+    this.setProjection(projection);
     const bounds = this.build.bounds ?? { min: [-3, -1, -3], max: [3, 2, 3], size: [7, 4, 7] };
     const target = new THREE.Vector3(...bounds.min.map((n, i) => n + bounds.size[i] / 2));
     const eye = new THREE.Vector3(...VIEWS[preset]).normalize();
     const right = Y_UP.clone().cross(eye).normalize();
     const up = eye.clone().cross(right);
-    const vFov = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const aspect = this.perspectiveCamera.aspect;
+    const orthographic = this.camera.isOrthographicCamera;
     let distance = 3;
+    let halfHeight = distance * HALF_FOV_TANGENT;
     for (const x of [bounds.min[0], bounds.max[0] + 1]) {
       for (const y of [bounds.min[1], bounds.max[1] + 1]) {
         for (const z of [bounds.min[2], bounds.max[2] + 1]) {
           const corner = new THREE.Vector3(x, y, z).sub(target);
-          const h = Math.abs(corner.dot(right)) / (vFov * this.camera.aspect * 0.91);
-          const v = Math.abs(corner.dot(up)) / (vFov * 0.83);
-          distance = Math.max(distance, corner.dot(eye) + Math.max(h, v));
+          const widthFit = Math.abs(corner.dot(right)) / (aspect * 0.91);
+          const heightFit = Math.abs(corner.dot(up)) / 0.83;
+          const extent = Math.max(widthFit, heightFit);
+          halfHeight = Math.max(halfHeight, extent);
+          const requiredDistance = orthographic ? corner.length() + 1 : corner.dot(eye) + extent / HALF_FOV_TANGENT;
+          distance = Math.max(distance, requiredDistance);
         }
       }
+    }
+    if (orthographic) {
+      this.camera.zoom = 1 / halfHeight;
+      this.camera.updateProjectionMatrix();
     }
     this.camera.position.copy(target).addScaledVector(eye, distance);
     this.controls.target.copy(target);
@@ -342,13 +397,19 @@ export class Viewport {
     this.invalidate();
   }
 
-  setCamera(position, target) {
+  setCamera(position, target, projection = this.projection) {
     for (const vector of [position, target]) {
       if (!Array.isArray(vector) || vector.length !== 3 || vector.some(n => !Number.isFinite(n) || Math.abs(n) > 5_000_000)) throw new Error('相机需要有效的三维坐标。');
     }
     const camera = new THREE.Vector3(...position);
     const lookAt = new THREE.Vector3(...target);
-    if (camera.distanceToSquared(lookAt) < 0.5625) throw new Error('相机距离目标至少 0.75 格。');
+    const distance = camera.distanceTo(lookAt);
+    if (distance < MIN_CAMERA_DISTANCE) throw new Error('相机距离目标至少 0.75 格。');
+    this.setProjection(projection);
+    if (this.camera.isOrthographicCamera) {
+      this.camera.zoom = 1 / (Math.min(distance, MAX_CAMERA_DISTANCE) * HALF_FOV_TANGENT);
+      this.camera.updateProjectionMatrix();
+    }
     this.camera.position.copy(camera);
     this.controls.target.copy(lookAt);
     this.controls.update();
@@ -356,23 +417,29 @@ export class Viewport {
   }
 
   cameraInfo() {
-    return { position: this.camera.position.toArray(), target: this.controls.target.toArray(), fov: this.camera.fov };
+    return {
+      position: this.camera.position.toArray(), target: this.controls.target.toArray(), projection: this.projection,
+      ...(this.camera.isOrthographicCamera ? { height: 2 / this.camera.zoom } : { fov: this.camera.fov }),
+    };
   }
 
   blockPreviewCamera(followCamera) {
-    const camera = new THREE.PerspectiveCamera(this.camera.fov, 1);
+    const camera = followCamera && this.camera.isOrthographicCamera
+      ? new THREE.OrthographicCamera()
+      : new THREE.PerspectiveCamera(FIELD_OF_VIEW, 1);
     if (followCamera) {
       camera.quaternion.copy(this.camera.quaternion);
     } else {
-      camera.position.fromArray(VIEWS.isometric);
+      camera.position.fromArray(VIEWS[DEFAULT_CAMERA_PRESET]);
       camera.lookAt(ZERO);
     }
     return camera;
   }
 
-  async capture(maxWidth = 1440) {
+  async capture(maxWidth = 1440, { transparent = false } = {}) {
     if (!Number.isInteger(maxWidth) || maxWidth < 256 || maxWidth > 1920) throw new Error('截图宽度需要是 256 至 1920 的整数。');
     await Promise.all([...this.materials.values()].map(({ ready }) => ready));
+    if (transparent) return this.captureBuilding(maxWidth);
     this.hoverOutline.visible = false;
     this.render();
     const scale = Math.min(1, maxWidth / this.canvas.width);
@@ -389,6 +456,27 @@ export class Viewport {
     ctx.drawImage(this.canvas, 0, 0, w, h);
     this.invalidate();
     return { data: canvas.toDataURL('image/png').split(',')[1], width: w, height: h };
+  }
+
+  captureBuilding(maxEdge) {
+    const { x: width, y: height } = this.renderer.getSize(new THREE.Vector2());
+    const pixelRatio = this.renderer.getPixelRatio();
+    const scale = maxEdge / Math.max(width, height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+
+    // Render the building group directly to preserve alpha and exclude editor guides.
+    this.renderer.setDrawingBufferSize(canvas.width, canvas.height, 1);
+    try {
+      this.updateClippingPlanes();
+      this.renderer.render(this.group, this.camera);
+      canvas.getContext('2d').drawImage(this.canvas, 0, 0);
+    } finally {
+      this.renderer.setDrawingBufferSize(width, height, pixelRatio);
+      this.invalidate();
+    }
+    return { data: canvas.toDataURL('image/png').split(',')[1], width: canvas.width, height: canvas.height };
   }
 }
 

@@ -70,8 +70,16 @@ function frameBlock(camera, layers) {
     }
   }
   const { center, radius } = bounds.getBoundingSphere(new THREE.Sphere());
-  const halfFov = camera.fov * radians / 2;
-  const distance = radius / (0.9 * Math.sin(halfFov));
+  let distance;
+  if (camera.isOrthographicCamera) {
+    const halfSpan = radius / 0.9;
+    camera.left = camera.bottom = -halfSpan;
+    camera.right = camera.top = halfSpan;
+    distance = 2 * radius;
+  } else {
+    const halfFov = camera.fov * radians / 2;
+    distance = radius / (0.9 * Math.sin(halfFov));
+  }
   camera.position.set(0, 0, distance).applyQuaternion(camera.quaternion).add(center);
   camera.near = Math.max(0.01, distance - 2 * radius);
   camera.far = distance + 2 * radius;

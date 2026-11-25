@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowUp, Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, ClipboardPaste, Copy, Cuboid,
-  Download, Eraser, FileBox, FilePlus, FolderOpen, Grid3x3, Languages, Layers, Mouse, MousePointer2,
+  Download, Eraser, FileBox, FilePlus, FolderOpen, Grid3x3, ImageDown, Languages, Layers, Mouse, MousePointer2,
   Move3d, Package, PackagePlus, PaintBucket, Pipette, Plus, Redo2, RotateCcw, RotateCw,
   Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
 } from 'lucide';
@@ -16,7 +16,7 @@ import { dataVersionFor, minecraftVersionFor, MINECRAFT_RELEASES } from './minec
 import { ModelPreview } from './model-preview.js';
 import { BlockCatalog, loadArchive } from './resource-pack.js';
 import { BuildScene, boundsOf, cellKey, emptyProject, MAX_COORDINATE, samePoint, STRUCTURE_FORMATS } from './scene.js';
-import { drawCompass, Viewport } from './viewport.js';
+import { DEFAULT_CAMERA_PRESET, drawCompass, Viewport } from './viewport.js';
 
 const byId = id => document.getElementById(id);
 const modIdFilter = byId('block-mod-id');
@@ -24,6 +24,8 @@ const unsavedDialog = byId('unsaved-dialog');
 const packImportButtons = document.querySelectorAll('[data-pack-type]');
 const packProgressPanels = document.querySelectorAll('[data-pack-progress]');
 const toolButtons = document.querySelectorAll('[data-tool]');
+const projectionButtons = document.querySelectorAll('[data-projection]');
+const presetButtons = document.querySelectorAll('[data-preset]');
 const brushTools = new Set(['place', 'fill']);
 const PALETTE_PAGE_SIZE = 120;
 const modelPreview = new ModelPreview();
@@ -31,7 +33,7 @@ const icons = {
   'arrow-down': ArrowDown, 'arrow-up': ArrowUp,
   box: Box, boxes: Boxes, 'box-select': BoxSelect, camera: Camera, check: Check, 'chevron-down': ChevronDown,
   'circle-alert': CircleAlert, 'circle-help': CircleHelp, 'clipboard-paste': ClipboardPaste, copy: Copy, cuboid: Cuboid, download: Download,
-  eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-open': FolderOpen, 'grid-3x3': Grid3x3,
+  eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-open': FolderOpen, 'grid-3x3': Grid3x3, 'image-down': ImageDown,
   languages: Languages, layers: Layers, mouse: Mouse, 'mouse-pointer-2': MousePointer2, 'move-3d': Move3d, package: Package,
   'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, plus: Plus, 'redo-2': Redo2,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
@@ -60,7 +62,7 @@ let brush = null;
 let tool = 'select';
 let category = 'all';
 let firstCorner = null;
-let currentPreset = 'isometric';
+let currentPreset = DEFAULT_CAMERA_PRESET;
 let currentFile = null;
 let savedRevision = build.revision;
 let paletteLimit = PALETTE_PAGE_SIZE;
@@ -277,6 +279,7 @@ function updateScene(change = {}) {
     byId('scene-bounds').textContent = build.bounds?.size.join(' × ') ?? '—';
     byId('minecraft-version').textContent = minecraftVersionFor(build.dataVersion) ?? '未知版本';
     byId('select-all').disabled = !build.blocks.size;
+    byId('export-image').disabled = !viewport || !build.blocks.size;
   }
   byId('selection-count').textContent = build.selection.size.toLocaleString();
   byId('copy-selection').disabled = !build.selection.size;
@@ -290,10 +293,35 @@ function updateScene(change = {}) {
   selectionBounds = bounds;
 }
 
-function frame(preset = currentPreset ?? 'isometric') {
-  viewport?.frame(preset);
+function updateCameraButtons() {
+  const projection = viewport?.projection;
+  for (const button of projectionButtons) button.setAttribute('aria-pressed', String(button.dataset.projection === projection));
+  for (const button of presetButtons) {
+    const active = button.dataset.preset === currentPreset && (currentPreset !== 'isometric' || projection === 'orthographic');
+    button.setAttribute('aria-pressed', String(active));
+  }
+}
+
+function frame(preset, projection) {
+  if (preset === undefined) {
+    preset = currentPreset ?? DEFAULT_CAMERA_PRESET;
+    projection = viewport?.projection;
+  }
+  viewport?.frame(preset, projection);
   currentPreset = preset;
-  for (const button of document.querySelectorAll('[data-preset]')) button.setAttribute('aria-pressed', String(button.dataset.preset === preset));
+  updateCameraButtons();
+}
+
+function setProjection(projection) {
+  viewport?.setProjection(projection);
+  updateCameraButtons();
+}
+
+async function saveViewportImage(transparent) {
+  if (!viewport) throw new Error('三维视图不可用。');
+  const filename = `${safeFilename(build.name)}-${transparent ? '透明渲染' : '视图'}`;
+  const { data } = await viewport.capture(transparent ? 1920 : undefined, { transparent });
+  if (await saveFile(decodeBase64(data), filename, 'png')) toast(transparent ? '已导出透明 PNG' : '已保存截图');
 }
 
 function hover(hit) {
@@ -440,7 +468,7 @@ function setProject(project, file = null) {
   savedRevision = build.revision;
   firstCorner = null;
   setSaveMenu(false);
-  frame('isometric');
+  frame(viewport?.projection === 'orthographic' ? 'isometric' : DEFAULT_CAMERA_PRESET);
   updateScene();
 }
 
@@ -914,7 +942,8 @@ byId('palette').addEventListener('click', event => {
 });
 
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => button.closest('dialog').close());
-for (const button of document.querySelectorAll('[data-preset]')) button.addEventListener('click', () => frame(button.dataset.preset));
+for (const button of presetButtons) button.addEventListener('click', () => frame(button.dataset.preset));
+for (const button of projectionButtons) button.addEventListener('click', () => setProjection(button.dataset.projection));
 for (const button of document.querySelectorAll('[data-rotation]')) button.addEventListener('click', () => {
   try { build.transform({ rotation: Number(button.dataset.rotation) }); }
   catch (error) { handleError(error); }
@@ -960,11 +989,8 @@ onClick('copy-selection', copySelection);
 onClick('paste-selection', () => toggleTool('paste'));
 onClick('grid-toggle', event => event.currentTarget.setAttribute('aria-pressed', String(viewport?.toggleGrid() ?? false)));
 onClick('frame', () => frame());
-onClick('screenshot', async () => {
-  if (!viewport) throw new Error('三维视图不可用。');
-  const { data } = await viewport.capture();
-  if (await saveFile(decodeBase64(data), `${safeFilename(build.name)}-视图`, 'png')) toast('已保存截图');
-});
+onClick('screenshot', () => saveViewportImage(false));
+onClick('export-image', () => saveViewportImage(true));
 onClick('select-all', () => { toggleTool('select'); build.select(build.blocks.keys()); });
 onClick('delete-selection', () => { if (build.removeSelection()) status('已删除选区'); });
 onClick('paint-selection', () => { if (build.paintSelection(brush)) status('已替换选区方块'); });
@@ -1053,6 +1079,7 @@ try {
   byId('view-error').textContent = `无法启动 WebGL 2。${errorMessage(error)}`;
   byId('view-error').hidden = false;
   byId('screenshot').disabled = true;
+  for (const button of [...projectionButtons, ...presetButtons]) button.disabled = true;
   console.error(error);
 }
 build.onChange(updateScene);
@@ -1089,19 +1116,23 @@ if (desktop) {
       }),
       saveProject: saveMcpProject,
       cameraInfo: () => viewport?.cameraInfo() ?? null,
-      setCamera: (position, target) => {
+      setCamera: (position, target, projection) => {
         if (!viewport) throw new Error('The viewport is unavailable.');
-        viewport.setCamera(position, target);
+        viewport.setCamera(position, target, projection);
         currentPreset = null;
-        for (const button of document.querySelectorAll('[data-preset]')) button.setAttribute('aria-pressed', 'false');
+        updateCameraButtons();
       },
-      frame: preset => {
+      setProjection: projection => {
         if (!viewport) throw new Error('The viewport is unavailable.');
-        frame(preset);
+        setProjection(projection);
       },
-      capture: width => {
+      frame: (preset, projection) => {
         if (!viewport) throw new Error('The viewport is unavailable.');
-        return viewport.capture(width);
+        frame(preset, projection);
+      },
+      capture: (width, options) => {
+        if (!viewport) throw new Error('The viewport is unavailable.');
+        return viewport.capture(width, options);
       },
       renderBlockStates: (states, followCamera) => {
         if (!viewport) throw new Error('The viewport is unavailable.');
