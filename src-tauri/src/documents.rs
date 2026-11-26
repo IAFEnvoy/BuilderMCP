@@ -27,6 +27,12 @@ pub struct SavedStructure {
     bytes: usize,
 }
 
+#[derive(Serialize)]
+pub struct SavedReplay {
+    path: PathBuf,
+    bytes: usize,
+}
+
 fn structure_format(path: &Path) -> Result<StructureFormat, String> {
     if !path.is_absolute() {
         return Err("Provide an absolute path on the machine running Builder MCP.".into());
@@ -138,6 +144,49 @@ pub async fn save_structure_file(
         Ok(SavedStructure {
             path,
             format,
+            bytes: bytes.len(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_replay_file(
+    app: AppHandle,
+    path: Option<PathBuf>,
+    data: String,
+    overwrite: bool,
+) -> Result<SavedReplay, String> {
+    let generate_path = path.is_none();
+    let path = match path {
+        Some(path)
+            if path.is_absolute()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("webm")) =>
+        {
+            path
+        }
+        Some(_) => return Err("Provide an absolute .webm destination path.".into()),
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
+            .join("exports")
+            .join(format!("replay-{}.webm", Uuid::new_v4())),
+    };
+    file_io(move || {
+        let bytes = STANDARD.decode(data).map_err(|error| error.to_string())?;
+        if !bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+            return Err("The replay encoder returned invalid WebM data.".into());
+        }
+        if generate_path {
+            fs::create_dir_all(path.parent().ok_or("Invalid save path.")?)
+                .map_err(|error| error.to_string())?;
+        }
+        write_document(&path, &bytes, overwrite && !generate_path)?;
+        Ok(SavedReplay {
+            path,
             bytes: bytes.len(),
         })
     })

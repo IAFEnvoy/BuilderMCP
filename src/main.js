@@ -1,16 +1,17 @@
 import {
-  Box, Boxes, BoxSelect, Camera, Check, ChevronDown, CircleAlert, CircleHelp, ClipboardPaste, Copy, Cuboid,
+  Box, Boxes, BoxSelect, Check, ChevronDown, CircleAlert, CircleDot, CircleHelp, ClipboardPaste, Copy,
   Download, Eraser, FileBox, FilePlus, FolderArchive, FolderOpen, Grid3x3, GripVertical, ImageDown, Languages, Layers, Mouse, MousePointer2,
-  Move3d, Package, PackagePlus, PaintBucket, Pipette, Plus, Redo2, Replace, RotateCcw, RotateCw,
-  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
+  Move3d, Package, PackagePlus, PaintBucket, Pipette, Play, Plus, Redo2, Replace, RotateCcw, RotateCw,
+  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, Square, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
 } from 'lucide';
+import { isAbsolute } from '@tauri-apps/api/path';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import Sortable from 'sortablejs';
 import './styles.css';
 import { blockEntityKind, defaultJigsaw, DYE_COLORS, MAX_BANNER_LAYERS } from './block-entities.js';
 import {
   connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, openProject, PACK_ARCHIVE_FORMATS,
-  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
+  packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveReplayFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, LOCALE_KEY, localeName, normalizeLocale } from './locales.js';
@@ -31,20 +32,27 @@ const packList = byId('pack-list');
 const packImportButtons = document.querySelectorAll('[data-pack-type]');
 const packProgressPanels = document.querySelectorAll('[data-pack-progress]');
 const toolButtons = document.querySelectorAll('[data-tool]');
+const recordButton = byId('record-edits');
+const replayButton = byId('replay-edits');
+const replayProgress = byId('replay-progress');
+const playbackLocks = document.querySelectorAll('.library, .inspector, #work-layer, #tools, #frame, .viewbar [data-preset]');
 const projectionButtons = document.querySelectorAll('[data-projection]');
 const presetButtons = document.querySelectorAll('[data-preset]');
+const compass = byId('compass');
+const compassEndpoints = new Map([...document.querySelectorAll('[data-axis-view]')].map(button => [button.dataset.axisView, button]));
 const brushTools = new Set(['place', 'replace', 'fill']);
 const PALETTE_PAGE_SIZE = 120;
+const REPLAY_STEP_MS = 200;
 const modelPreview = new ModelPreview();
 const icons = {
-  box: Box, boxes: Boxes, 'box-select': BoxSelect, camera: Camera, check: Check, 'chevron-down': ChevronDown,
-  'circle-alert': CircleAlert, 'circle-help': CircleHelp, 'clipboard-paste': ClipboardPaste, copy: Copy, cuboid: Cuboid, download: Download,
+  box: Box, boxes: Boxes, 'box-select': BoxSelect, check: Check, 'chevron-down': ChevronDown,
+  'circle-alert': CircleAlert, 'circle-dot': CircleDot, 'circle-help': CircleHelp, 'clipboard-paste': ClipboardPaste, copy: Copy, download: Download,
   eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-archive': FolderArchive, 'folder-open': FolderOpen,
   'grid-3x3': Grid3x3, 'grip-vertical': GripVertical, 'image-down': ImageDown,
   languages: Languages, layers: Layers, mouse: Mouse, 'mouse-pointer-2': MousePointer2, 'move-3d': Move3d, package: Package,
-  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, plus: Plus, 'redo-2': Redo2, replace: Replace,
+  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, play: Play, plus: Plus, 'redo-2': Redo2, replace: Replace,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
-  'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
+  'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, square: Square, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
   'trash-2': Trash2, 'undo-2': Undo2, x: X,
 };
 
@@ -85,16 +93,21 @@ let packs = new Map();
 let packBusy = false;
 let packQueue = Promise.resolve();
 let projectBusy = false;
+let recording = null;
+let lastRecording = null;
+let playback = null;
+let activeReplayExport = null;
+const replayExports = new Map();
 let mcp = { url: '', error: desktop ? '' : '请使用桌面应用启动 MCP 服务。' };
 let viewport;
 let toastTimer;
 
 const tools = {
-  select: '点击选取，Shift + 点击多选',
+  select: '点击选择，Shift + 点击多选',
   place: '点击放置方块',
   replace: '点击已有方块替换，点击选区内的方块可替换整个选区',
   erase: '点击擦除方块',
-  box: '点击区域选区的第一个角点',
+  box: '点击框选区域的第一个角点',
   fill: '点击填充区域的第一个角点',
   pick: '点击吸取方块及其状态',
   paste: '左键确认粘贴，Esc 取消',
@@ -607,11 +620,11 @@ function setProjection(projection) {
   updateCameraButtons();
 }
 
-async function saveViewportImage(transparent) {
+async function saveViewportImage() {
   if (!viewport) throw new Error('三维视图不可用。');
-  const filename = `${safeFilename(build.name)}-${transparent ? '透明渲染' : '视图'}`;
-  const { data } = await viewport.capture(transparent ? 1920 : undefined, { transparent });
-  if (await saveFile(decodeBase64(data), filename, 'png')) toast(transparent ? '已导出透明 PNG' : '已保存截图');
+  const filename = `${safeFilename(build.name)}-透明渲染`;
+  const { data } = await viewport.capture(1920, { transparent: true });
+  if (await saveFile(decodeBase64(data), filename, 'png')) toast('已导出透明 PNG');
 }
 
 function hover(hit) {
@@ -639,6 +652,14 @@ function copySelection() {
 
 function clickScene(hit, event) {
   try {
+    if (event.button === 1 || tool === 'pick') {
+      const block = hit?.cell && build.blocks.get(cellKey(hit.cell));
+      if (block) {
+        chooseBrush(block.state, true, block.blockEntity);
+        status(`已吸取 ${brush.name}`);
+      }
+      return;
+    }
     if (tool === 'select') {
       const keys = event.shiftKey ? new Set(build.selection) : new Set();
       if (hit?.cell) {
@@ -666,11 +687,6 @@ function clickScene(hit, event) {
       status(changes ? `已替换 ${changes.toLocaleString()} 个方块` : '目标已是当前画笔状态');
     }
     if (tool === 'erase' && hit.cell) build.setBlocks([{ pos: hit.cell, state: null }]);
-    if (tool === 'pick' && hit.cell) {
-      const block = build.blocks.get(cellKey(hit.cell));
-      chooseBrush(block.state, true, block.blockEntity);
-      status(`已吸取 ${brush.name}`);
-    }
     if (tool === 'box' || tool === 'fill') {
       const pos = hit.cell ?? hit.place;
       if (!firstCorner) {
@@ -697,6 +713,215 @@ function applyHistory(action) {
   viewport?.setHover(null);
   status(action === 'undo' ? '已撤销' : '已重做');
   return true;
+}
+
+function updateReplayProgress() {
+  replayProgress.hidden = !recording && !playback && !activeReplayExport;
+  replayProgress.classList.toggle('recording', Boolean(recording));
+  if (recording) replayProgress.textContent = `录制中 · ${recording.steps.length.toLocaleString()} 步`;
+  if (playback) replayProgress.textContent = `回放 · ${playback.index.toLocaleString()} / ${lastRecording.steps.length.toLocaleString()}`;
+  if (activeReplayExport) {
+    const { status, framesRendered, frameCount } = activeReplayExport.info;
+    replayProgress.textContent = status === 'saving' ? '正在保存回放视频' : `导出回放 · ${framesRendered.toLocaleString()} / ${frameCount.toLocaleString()}`;
+  }
+}
+
+function replayViewLocked() {
+  return Boolean(playback || activeReplayExport?.info.status === 'rendering');
+}
+
+function updateReplayControls() {
+  const exporting = activeReplayExport?.info.status === 'rendering';
+  recordButton.disabled = !viewport || Boolean(playback || activeReplayExport);
+  replayButton.disabled = !viewport || Boolean(recording) || !lastRecording || Boolean(activeReplayExport && !exporting);
+  recordButton.classList.toggle('recording', Boolean(recording));
+  replayButton.classList.toggle('playing', replayViewLocked());
+  for (const [button, active, idleIcon, label] of [
+    [recordButton, recording, 'circle-dot', recording ? '结束录制' : '录制操作'],
+    [replayButton, replayViewLocked(), 'play', exporting ? '取消回放导出' : playback ? '停止回放' : '回放操作'],
+  ]) {
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.replaceChildren(icon(active ? 'square' : idleIcon));
+  }
+  updateReplayProgress();
+}
+
+function startRecording() {
+  if (!viewport) throw new Error('三维视图不可用。');
+  if (playback || activeReplayExport) throw new Error('请等回放或导出结束后再录制。');
+  if (!recording) {
+    // Scene edits replace block records. Keep the starting map and reuse its block data.
+    recording = { blocks: new Map(build.blocks), steps: [] };
+    status('已开始录制方块编辑');
+    updateReplayControls();
+  }
+  return { recording: true, initialBlockCount: recording.blocks.size, stepCount: recording.steps.length };
+}
+
+function stopRecording() {
+  if (!recording) return { recording: false, stopped: false, stepCount: 0, hasReplay: Boolean(lastRecording) };
+  const stepCount = recording.steps.length;
+  if (stepCount) lastRecording = recording;
+  recording = null;
+  status(stepCount ? `已录制 ${stepCount.toLocaleString()} 步操作` : '这次录制没有方块编辑');
+  updateReplayControls();
+  return { recording: false, stopped: true, stepCount, hasReplay: Boolean(lastRecording) };
+}
+
+function enterReplayView(blocks) {
+  brushPopover.hidePopover();
+  for (const control of playbackLocks) control.inert = true;
+  viewport.startReplay(blocks);
+}
+
+function leaveReplayView() {
+  for (const control of playbackLocks) control.inert = false;
+  viewport.stopReplay();
+}
+
+function stopPlayback(message) {
+  if (!playback) return;
+  clearInterval(playback.timer);
+  playback = null;
+  try { leaveReplayView(); }
+  finally { updateReplayControls(); }
+  if (message) status(message);
+}
+
+function advancePlayback() {
+  try {
+    if (playback.index === lastRecording.steps.length) {
+      stopPlayback('回放完成');
+      return;
+    }
+    viewport.replayStep(lastRecording.steps[playback.index]);
+    playback.index++;
+    updateReplayProgress();
+  } catch (error) {
+    stopPlayback();
+    handleError(error);
+  }
+}
+
+function togglePlayback() {
+  if (activeReplayExport) {
+    cancelReplayExport('已取消回放导出');
+    return;
+  }
+  if (playback) {
+    stopPlayback('已停止回放');
+    return;
+  }
+  playback = { index: 0, timer: null };
+  try {
+    enterReplayView(lastRecording.blocks);
+    playback.timer = setInterval(advancePlayback, REPLAY_STEP_MS);
+    updateReplayControls();
+    status('正在回放操作，可按 Esc 停止');
+  } catch (error) {
+    stopPlayback();
+    throw error;
+  }
+}
+
+function cancelReplayExport(message) {
+  const job = activeReplayExport;
+  if (job?.info.status !== 'rendering') return;
+  job.controller.abort();
+  job.info.status = 'cancelled';
+  activeReplayExport = null;
+  try { leaveReplayView(); }
+  finally { updateReplayControls(); }
+  if (message) status(message);
+}
+
+async function runReplayExport(job, take, { canvas, draw }, path, overwrite) {
+  const { info, controller: { signal } } = job;
+  try {
+    let video;
+    try {
+      enterReplayView(take.blocks);
+      const { encodeReplayVideo } = await import('./replay-video.js');
+      signal.throwIfAborted();
+      video = await encodeReplayVideo(canvas, {
+        frameCount: info.frameCount, frameDuration: REPLAY_STEP_MS / 1000, signal,
+        drawFrame: index => {
+          if (index) viewport.replayStep(take.steps[index - 1]);
+          return draw(index * REPLAY_STEP_MS, signal);
+        },
+        onFrame: index => {
+          if (signal.aborted) return;
+          info.framesRendered = index + 1;
+          updateReplayProgress();
+        },
+      });
+    } finally {
+      if (!signal.aborted) leaveReplayView();
+    }
+    signal.throwIfAborted();
+    info.status = 'saving';
+    updateReplayControls();
+    const saved = await saveReplayFile(video, path, overwrite);
+    Object.assign(info, saved, { status: 'completed' });
+    status('已导出回放视频');
+  } catch (error) {
+    if (!signal.aborted) {
+      Object.assign(info, { status: 'failed', error: errorMessage(error) });
+      handleError(error);
+    }
+  } finally {
+    if (activeReplayExport === job) {
+      activeReplayExport = null;
+      updateReplayControls();
+    }
+  }
+}
+
+async function exportReplay({ path, overwrite = false, max_edge = 1280 }) {
+  if (path !== undefined && (typeof path !== 'string' || !/\.webm$/i.test(path) || !await isAbsolute(path))) {
+    throw new Error('请提供 .webm 文件的绝对路径。');
+  }
+  if (!viewport) throw new Error('三维视图不可用。');
+  if (recording || playback || activeReplayExport) throw new Error('请等录制、回放或导出结束后再导出。');
+  if (!lastRecording) throw new Error('请先完成一段包含方块编辑的录制。');
+  if (typeof overwrite !== 'boolean') throw new Error('overwrite must be a boolean.');
+  if (!Number.isInteger(max_edge) || max_edge < 256 || max_edge > 1920) throw new Error('max_edge must be an integer between 256 and 1920.');
+
+  const take = lastRecording;
+  const capture = viewport.createReplayCapture(max_edge);
+  const exportId = crypto.randomUUID();
+  const frameCount = take.steps.length + 1;
+  const info = {
+    exportId, status: 'rendering', format: 'webm', stepCount: take.steps.length,
+    framesRendered: 0, frameCount, durationMs: frameCount * REPLAY_STEP_MS,
+    width: capture.canvas.width, height: capture.canvas.height,
+  };
+  const job = { info, controller: new AbortController() };
+  activeReplayExport = job;
+  replayExports.set(exportId, info);
+  updateReplayControls();
+  status('正在导出回放视频，可按 Esc 取消');
+  void runReplayExport(job, take, capture, path ?? null, overwrite);
+  return { ...info };
+}
+
+function getReplayExport({ export_id }) {
+  const info = replayExports.get(export_id);
+  if (!info) throw new Error('找不到该回放导出任务。');
+  return { ...info };
+}
+
+function recordSceneChange({ reset, changes, side }) {
+  if (reset) {
+    cancelReplayExport();
+    recording = lastRecording = null;
+    if (playback) stopPlayback();
+    else updateReplayControls();
+  } else if (recording && changes?.size) {
+    recording.steps.push({ changes, side });
+    updateReplayProgress();
+  }
 }
 
 async function projectAction(action) {
@@ -1286,6 +1511,7 @@ window.addEventListener('resize', positionBrushPopover);
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => button.closest('dialog').close());
 for (const button of presetButtons) button.addEventListener('click', () => frame(button.dataset.preset));
 for (const button of projectionButtons) button.addEventListener('click', () => setProjection(button.dataset.projection));
+for (const [view, endpoint] of compassEndpoints) endpoint.addEventListener('click', () => frame(view, viewport?.projection));
 for (const button of document.querySelectorAll('[data-rotation]')) button.addEventListener('click', () => {
   try { build.transform({ rotation: Number(button.dataset.rotation) }); }
   catch (error) { handleError(error); }
@@ -1330,12 +1556,12 @@ document.addEventListener('click', event => {
 });
 onClick('undo', () => applyHistory('undo'));
 onClick('redo', () => applyHistory('redo'));
+onClick('record-edits', () => recording ? stopRecording() : startRecording());
+onClick('replay-edits', togglePlayback);
 onClick('copy-selection', copySelection);
-onClick('paste-selection', () => toggleTool('paste'));
 onClick('grid-toggle', event => event.currentTarget.setAttribute('aria-pressed', String(viewport?.toggleGrid() ?? false)));
 onClick('frame', () => frame());
-onClick('screenshot', () => saveViewportImage(false));
-onClick('export-image', () => saveViewportImage(true));
+onClick('export-image', saveViewportImage);
 onClick('select-all', () => { toggleTool('select'); build.select(build.blocks.keys()); });
 onClick('delete-selection', () => { if (build.removeSelection()) status('已删除选区'); });
 onClick('pack-manager', () => { renderPacks(); byId('pack-dialog').showModal(); });
@@ -1378,7 +1604,10 @@ document.addEventListener('keydown', event => {
     if (Object.hasOwn(fileShortcuts, chord)) {
       event.preventDefault();
       if (!event.repeat) byId(fileShortcuts[chord]).click();
-    } else if (!editing && Object.hasOwn(clipboardShortcuts, chord)) {
+      return;
+    }
+    if (replayViewLocked()) return;
+    if (!editing && Object.hasOwn(clipboardShortcuts, chord)) {
       const button = byId(clipboardShortcuts[chord]);
       if (button.disabled || (chord === 'c' && window.getSelection()?.isCollapsed === false)) return;
       event.preventDefault();
@@ -1394,7 +1623,10 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (key === 'escape' && !event.altKey && !event.repeat) {
-    if (brushPopover.matches(':popover-open')) {
+    if (replayViewLocked()) {
+      event.preventDefault();
+      togglePlayback();
+    } else if (brushPopover.matches(':popover-open')) {
       event.preventDefault();
       brushPopover.hidePopover();
     } else if (tool === 'paste') {
@@ -1408,7 +1640,7 @@ document.addEventListener('keydown', event => {
     }
     return;
   }
-  if (editing || event.altKey) return;
+  if (replayViewLocked() || editing || event.altKey) return;
   const shortcut = { v: 'select', p: 'place', r: 'replace', e: 'erase', b: 'box', g: 'fill', i: 'pick' };
   if (shortcut[key]) toggleTool(shortcut[key]);
   if (key === 'f') frame();
@@ -1416,20 +1648,28 @@ document.addEventListener('keydown', event => {
   if (key === '/') { event.preventDefault(); byId('palette-search').focus(); }
 });
 
+let compassOrientation;
 try {
   viewport = new Viewport(byId('viewport'), build, catalog, {
     click: clickScene,
     hover,
-    orientation: quaternion => drawCompass(byId('compass'), quaternion),
+    orientation: quaternion => {
+      if (compassOrientation?.equals(quaternion)) return;
+      compassOrientation = quaternion.clone();
+      drawCompass(compass, quaternion, compassEndpoints);
+    },
   });
 } catch (error) {
   byId('view-error').textContent = `无法启动 WebGL 2。${errorMessage(error)}`;
   byId('view-error').hidden = false;
-  byId('screenshot').disabled = true;
-  for (const button of [...projectionButtons, ...presetButtons]) button.disabled = true;
+  for (const button of [...projectionButtons, ...presetButtons, ...compassEndpoints.values()]) button.disabled = true;
   console.error(error);
 }
-build.onChange(updateScene);
+build.onChange(change => {
+  recordSceneChange(change);
+  updateScene(change);
+});
+updateReplayControls();
 updateScene();
 renderPalette();
 renderLanguages();
@@ -1446,6 +1686,10 @@ if (desktop) {
       projectInfo,
       applyHistory,
       copySelection,
+      startRecording,
+      stopRecording,
+      exportReplay,
+      getReplayExport,
       newProject: ({ name, minecraft_version, data_version, discard_unsaved }) => projectAction(() => {
         requireSavedProject(discard_unsaved);
         const dataVersion = minecraft_version === undefined ? data_version : dataVersionFor(minecraft_version);

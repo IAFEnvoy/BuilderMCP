@@ -85,6 +85,7 @@ pub fn run() {
             documents::save_document,
             documents::read_structure_file,
             documents::save_structure_file,
+            documents::save_replay_file,
             mcp::mcp_ready,
             mcp::mcp_reply
         ])

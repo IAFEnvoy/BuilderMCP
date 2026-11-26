@@ -15,6 +15,7 @@ const FIELD_OF_VIEW = 35;
 const HALF_FOV_TANGENT = Math.tan(THREE.MathUtils.degToRad(FIELD_OF_VIEW / 2));
 const MIN_CAMERA_DISTANCE = 0.75;
 const MAX_CAMERA_DISTANCE = 4_000_000;
+const CLICK_TOLERANCE = 5;
 const chunkKey = pos => pos.map(n => Math.floor(n / 16)).join(',');
 
 function workGrid() {
@@ -119,6 +120,7 @@ export class Viewport {
     this.animatedTextures = new Set();
     this.markers = new Set();
     this.markerRotation = new THREE.Quaternion(0, 0, 0, 0);
+    this.replaying = false;
     this.layer = 0;
     this.raycaster = new THREE.Raycaster();
     this.floor = new THREE.Plane(Y_UP, 0);
@@ -126,6 +128,12 @@ export class Viewport {
     this.canvas.addEventListener('contextmenu', event => event.preventDefault());
     this.canvas.addEventListener('pointermove', event => {
       this.samplePointer = [event.clientX, event.clientY];
+      const start = this.pointerStart;
+      if (start?.button === 1 && start.id === event.pointerId) {
+        // Keep OrbitControls from moving the camera until this is a drag.
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) <= CLICK_TOLERANCE) event.stopPropagation();
+        else this.pointerStart = null;
+      }
       this.invalidate();
     });
     this.canvas.addEventListener('pointerleave', () => {
@@ -135,13 +143,17 @@ export class Viewport {
       this.invalidate();
     });
     this.canvas.addEventListener('pointerdown', event => {
-      if (event.button === 0) this.pointerStart = [event.clientX, event.clientY];
+      if (event.button !== 0 && event.button !== 1) return;
+      if (event.button === 1) event.preventDefault();
+      this.pointerStart = { id: event.pointerId, button: event.button, x: event.clientX, y: event.clientY };
     });
     this.canvas.addEventListener('pointerup', event => {
-      if (event.button !== 0 || !this.pointerStart) return;
-      const [x, y] = this.pointerStart;
+      const start = this.pointerStart;
+      if (!start || start.id !== event.pointerId) return;
       this.pointerStart = null;
-      if (Math.hypot(event.clientX - x, event.clientY - y) <= 5) this.callbacks.click?.(this.pick(event.clientX, event.clientY), event);
+      if (start.button === event.button && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= CLICK_TOLERANCE) {
+        this.callbacks.click?.(this.pick(event.clientX, event.clientY), event);
+      }
     });
     this.canvas.addEventListener('pointercancel', () => { this.pointerStart = null; });
 
@@ -235,18 +247,25 @@ export class Viewport {
     this.models.clear();
     this.materials.clear();
     this.textures.clear();
-    this.rebuild();
+    for (const key of this.chunks.keys()) this.rebuildChunk(key);
+    this.invalidate();
   }
 
-  sceneChanged(change) {
-    if (change.reset) {
+  sceneChanged({ reset, changes, side }) {
+    if (this.replaying) return;
+    if (reset) {
       this.rebuild();
       return;
     }
+    if (changes) this.updateBlocks(changes, side);
+    this.updateSelection();
+  }
+
+  updateBlocks(changes, side) {
     const dirty = new Set();
-    for (const [key, { before, after }] of change.changes ?? []) {
-      const chunk = chunkKey((before ?? after).pos);
-      const block = this.build.blocks.get(key);
+    for (const [key, change] of changes) {
+      const chunk = chunkKey((change.before ?? change.after).pos);
+      const block = change[side];
       if (block) {
         if (!this.chunks.has(chunk)) this.chunks.set(chunk, new Map());
         this.chunks.get(chunk).set(key, block);
@@ -254,7 +273,28 @@ export class Viewport {
       dirty.add(chunk);
     }
     for (const key of dirty) this.rebuildChunk(key);
-    this.updateSelection();
+  }
+
+  startReplay(blocks) {
+    this.replaying = true;
+    this.host.inert = true;
+    this.controls.enabled = false;
+    this.dragging = false;
+    this.pointerStart = this.samplePointer = null;
+    this.hoverOutline.visible = false;
+    this.rebuild(blocks);
+  }
+
+  replayStep({ changes, side }) {
+    this.updateBlocks(changes, side);
+    this.invalidate();
+  }
+
+  stopReplay() {
+    this.replaying = false;
+    this.host.inert = false;
+    this.controls.enabled = true;
+    this.rebuild();
   }
 
   clearViews() {
@@ -272,10 +312,10 @@ export class Viewport {
     this.group.remove(view);
   }
 
-  rebuild() {
+  rebuild(blocks = this.build.blocks) {
     this.clearViews();
     this.chunks.clear();
-    for (const [key, block] of this.build.blocks) {
+    for (const [key, block] of blocks) {
       const chunk = chunkKey(block.pos);
       if (!this.chunks.has(chunk)) this.chunks.set(chunk, new Map());
       this.chunks.get(chunk).set(key, block);
@@ -360,7 +400,7 @@ export class Viewport {
   }
 
   updateSelection() {
-    showBox(this.selectionOutline, boundsOf(this.build.selected));
+    showBox(this.selectionOutline, this.replaying ? null : boundsOf(this.build.selected));
     this.invalidate();
   }
 
@@ -425,6 +465,7 @@ export class Viewport {
   }
 
   setProjection(projection) {
+    if (this.replaying) throw new Error('回放期间相机视角固定。');
     if (projection !== 'perspective' && projection !== 'orthographic') throw new Error('未知投影方式。');
     if (projection === this.projection) return;
 
@@ -540,45 +581,77 @@ export class Viewport {
 
   captureBuilding(maxEdge) {
     const { x: width, y: height } = this.renderer.getSize(new THREE.Vector2());
-    const pixelRatio = this.renderer.getPixelRatio();
     const scale = maxEdge / Math.max(width, height);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(width * scale));
     canvas.height = Math.max(1, Math.round(height * scale));
+    this.updateClippingPlanes();
+    this.drawBuilding(canvas, this.camera);
+    return { data: canvas.toDataURL('image/png').split(',')[1], width: canvas.width, height: canvas.height };
+  }
 
+  createReplayCapture(maxEdge) {
+    const { x: width, y: height } = this.renderer.getSize(new THREE.Vector2());
+    const evenEdge = maxEdge - maxEdge % 2;
+    const scale = evenEdge / Math.max(width, height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, 2 * Math.round(width * scale / 2));
+    canvas.height = Math.max(2, 2 * Math.round(height * scale / 2));
+    this.updateClippingPlanes();
+    const camera = this.camera.clone();
+    const start = performance.now();
+    const draw = async (elapsed, signal) => {
+      await Promise.all([...this.materials.values()].map(({ ready }) => ready));
+      signal.throwIfAborted();
+      this.advanceTextures(start + elapsed);
+      this.drawBuilding(canvas, camera, '#202934');
+    };
+    return { canvas, draw };
+  }
+
+  drawBuilding(canvas, camera, background) {
+    const { x: width, y: height } = this.renderer.getSize(new THREE.Vector2());
+    const pixelRatio = this.renderer.getPixelRatio();
     // Render the building group directly to preserve alpha and exclude editor guides.
     this.renderer.setDrawingBufferSize(canvas.width, canvas.height, 1);
     for (const mesh of this.markers) mesh.visible = false;
     try {
-      this.updateClippingPlanes();
-      this.renderer.render(this.group, this.camera);
-      canvas.getContext('2d').drawImage(this.canvas, 0, 0);
+      this.renderer.render(this.group, camera);
+      const context = canvas.getContext('2d');
+      if (background) {
+        context.fillStyle = background;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      context.drawImage(this.canvas, 0, 0);
     } finally {
       for (const mesh of this.markers) mesh.visible = true;
       this.renderer.setDrawingBufferSize(width, height, pixelRatio);
       this.invalidate();
     }
-    return { data: canvas.toDataURL('image/png').split(',')[1], width: canvas.width, height: canvas.height };
   }
 }
 
-export function drawCompass(canvas, quaternion) {
+export function drawCompass(canvas, quaternion, endpoints) {
   const context = canvas.getContext('2d');
   const size = canvas.width;
   const center = size / 2;
   const axes = [
-    ['X', '#f19a8d', new THREE.Vector3(1, 0, 0)],
-    ['Y', '#a0d9a6', Y_UP.clone()],
-    ['Z', '#95bdf6', new THREE.Vector3(0, 0, 1)],
+    ['right', 'X', '#f19a8d', new THREE.Vector3(1, 0, 0)],
+    ['top', 'Y', '#a0d9a6', Y_UP.clone()],
+    ['front', 'Z', '#95bdf6', new THREE.Vector3(0, 0, 1)],
   ];
   const inverse = quaternion.clone().invert();
-  axes.forEach(([, , vector]) => vector.applyQuaternion(inverse));
-  axes.sort((a, b) => a[2].z - b[2].z);
+  axes.forEach(([, , , vector]) => vector.applyQuaternion(inverse));
+  axes.sort((a, b) => a[3].z - b[3].z);
   context.clearRect(0, 0, size, size);
   context.lineWidth = 2;
-  for (const [label, color, { x, y, z }] of axes) {
+  for (const [index, [view, label, color, { x, y, z }]] of axes.entries()) {
     const dx = center + x * size * 0.34;
     const dy = center - y * size * 0.34;
+    const endpoint = endpoints.get(view);
+    endpoint.style.left = `${dx / size * 100}%`;
+    endpoint.style.top = `${dy / size * 100}%`;
+    endpoint.style.zIndex = String(index + 1);
     context.globalAlpha = z < -0.01 ? 0.54 : 1;
     context.strokeStyle = color;
     context.fillStyle = color;

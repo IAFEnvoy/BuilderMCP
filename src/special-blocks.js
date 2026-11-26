@@ -4,7 +4,13 @@ const sides = ['north', 'east', 'south', 'west'];
 const facingAngles = new Map([['south', 0], ['west', 90], ['north', 180], ['east', 270]]);
 const dyeNames = Object.keys(DYE_COLORS);
 const rotations = Array.from({ length: 16 }, (_, i) => String(i));
-const chestTextures = { chest: 'normal', trapped_chest: 'trapped', ender_chest: 'ender' };
+const chestTextures = {
+  chest: 'normal', trapped_chest: 'trapped', ender_chest: 'ender',
+  copper_chest: 'copper', waxed_copper_chest: 'copper',
+  exposed_copper_chest: 'copper_exposed', waxed_exposed_copper_chest: 'copper_exposed',
+  weathered_copper_chest: 'copper_weathered', waxed_weathered_copper_chest: 'copper_weathered',
+  oxidized_copper_chest: 'copper_oxidized', waxed_oxidized_copper_chest: 'copper_oxidized',
+};
 const markers = new Set(['barrier', 'light', 'structure_void']);
 
 function vanillaPath(name) {

@@ -54,3 +54,25 @@ test('the clipboard is reusable across projects and rejects out-of-bounds pastes
   assert.equal(scene.history.length, 2);
   assert.deepEqual(scene.selected.map(({ pos }) => pos), [[0, 0, 0], [1, 0, 0]]);
 });
+
+test('scene changes report the block data applied by edits, undo, and redo', () => {
+  const pos = [0, 0, 0];
+  const key = cellKey(pos);
+  const initial = { pos, state: { name: 'minecraft:red_banner', properties: { rotation: '0' } } };
+  const edited = { pos, state: initial.state, blockEntity: { patterns: [{ pattern: 'minecraft:rhombus', color: 'blue' }] } };
+  const scene = new BuildScene({ ...emptyProject(), blocks: [initial] });
+  const recordedBlocks = [];
+  scene.onChange(({ changes, side }) => {
+    if (changes?.size) recordedBlocks.push(changes.get(key)[side]);
+  });
+
+  scene.setBlocks([edited]);
+  scene.select([key]);
+  scene.setBlocks([edited]);
+  scene.setBlocks([{ pos, state: null }]);
+  scene.undo();
+  scene.undo();
+  scene.redo();
+
+  assert.deepEqual(recordedBlocks, [edited, null, edited, initial, edited]);
+});

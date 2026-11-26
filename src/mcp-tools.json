@@ -136,6 +136,32 @@
       } }
     },
     {
+      "name": "start_recording", "description": "Record block edits from the current project state, including edits made in the editor or through MCP. A repeat call keeps the current recording and returns its initialBlockCount and stepCount.",
+      "annotations": { "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false }
+    },
+    {
+      "name": "stop_recording", "description": "Stop the active block edit recording. Check stopped and stepCount to confirm this take contains edits. An empty take preserves the previous replay, if one exists.",
+      "annotations": { "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false }
+    },
+    {
+      "name": "export_replay", "description": "Start exporting the last finished recording to a WebM video. The current camera pose stays fixed, and each recorded block edit takes 200 ms. Returns exportId immediately. Call get_replay_export with that ID to obtain the saved path or error.",
+      "annotations": { "destructiveHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Absolute destination .webm path on the machine running Builder MCP. Omit to generate a path in the app's exports directory." },
+        "overwrite": { "type": "boolean", "default": false, "description": "Replace an existing destination file." },
+        "max_edge": { "type": "integer", "minimum": 256, "maximum": 1920, "default": 1280, "description": "Longest video edge in pixels, rounded down to an even size if needed. The viewport aspect ratio is preserved within pixel rounding." }
+      } }
+    },
+    {
+      "name": "get_replay_export", "description": "Read an export's status and frame progress. Status is rendering, saving, completed, failed, or cancelled. Completed exports include path and bytes. Failed exports include an error message.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "required": ["export_id"], "additionalProperties": false, "properties": {
+        "export_id": { "type": "string", "minLength": 1, "description": "The exportId returned by export_replay." }
+      } }
+    },
+    {
       "name": "set_camera", "description": "Switch projection or set a camera pose. The isometric preset uses orthographic projection by default. Returns the camera position, target, projection and its field of view or orthographic height.",
       "annotations": { "destructiveHint": false, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {

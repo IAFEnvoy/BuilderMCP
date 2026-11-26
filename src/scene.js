@@ -344,7 +344,7 @@ export class BuildScene {
     if (entry.metadata) Object.assign(this, entry.metadata[side]);
     this.revision = entry[`${side}Revision`];
     this.selection = new Set([...entry[`${side}Selection`]].filter(key => this.blocks.has(key)));
-    this.notify({ changes: entry.changes });
+    this.notify({ changes: entry.changes, side });
   }
 
   undo() {

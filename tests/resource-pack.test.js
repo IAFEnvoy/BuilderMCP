@@ -253,6 +253,40 @@ test('legacy generated item models use sprite layers', async () => {
   ]);
 });
 
+test('copper chests use the matching oxidation textures for single and double chests', async () => {
+  const stages = {
+    copper_chest: 'copper', exposed_copper_chest: 'copper_exposed',
+    weathered_copper_chest: 'copper_weathered', oxidized_copper_chest: 'copper_oxidized',
+  };
+  const types = { single: '', left: '_left', right: '_right' };
+  const assets = {};
+  for (const [name, texture] of Object.entries(stages)) {
+    for (const prefix of ['', 'waxed_']) {
+      assets[`assets/minecraft/blockstates/${prefix}${name}.json`] = { variants: { '': { model: `minecraft:block/${name}` } } };
+    }
+    assets[`assets/minecraft/models/block/${name}.json`] = { textures: { particle: 'minecraft:block/copper_block' } };
+    for (const suffix of Object.values(types)) assets[`assets/minecraft/textures/entity/chest/${texture}${suffix}.png`] = '';
+  }
+
+  const catalog = new BlockCatalog([await loadArchive(archive(assets))]);
+  for (const [name, texture] of Object.entries(stages)) {
+    for (const prefix of ['', 'waxed_']) {
+      const id = `minecraft:${prefix}${name}`;
+      assert.deepEqual(catalog.blocks.get(id).properties, {
+        facing: ['north', 'east', 'south', 'west'], waterlogged: ['false', 'true'], type: ['single', 'left', 'right'],
+      });
+      for (const [type, suffix] of Object.entries(types)) {
+        const state = catalog.state({ name: id, properties: { facing: 'east', type } });
+        const [part] = catalog.parts(state, [0, 0, 0]);
+        const [mesh] = buildGeometry(catalog, part);
+        assert.equal(part.y, 270);
+        assert.equal(mesh.texture, `minecraft:entity/chest/${texture}${suffix}`);
+        mesh.geometry.dispose();
+      }
+    }
+  }
+});
+
 test('cuboid baking supports Euler element rotations and rotates cropped UV coordinates under uvlock', () => {
   const catalog = new BlockCatalog();
   const texture = 'minecraft:block/stone';

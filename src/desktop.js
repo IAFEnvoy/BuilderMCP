@@ -88,6 +88,10 @@ export function saveStructureFile(project, path, format, overwrite, { preserveOr
   return invoke('save_structure_file', { path, format, overwrite, preserveOrigin, project });
 }
 
+export function saveReplayFile(buffer, path, overwrite) {
+  return invoke('save_replay_file', { path, overwrite, data: encodeBase64(new Uint8Array(buffer)) });
+}
+
 export async function saveStructureAs(project, name, format) {
   if (desktop) {
     const path = await chooseSavePath(name, format);

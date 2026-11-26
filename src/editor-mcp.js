@@ -50,6 +50,10 @@ export function editorMcp(scene, editor) {
       if (action !== 'undo' && action !== 'redo') throw new Error('action must be undo or redo.');
       return { applied: editor.applyHistory(action), blockCount: scene.blocks.size };
     },
+    start_recording: () => editor.startRecording(),
+    stop_recording: () => editor.stopRecording(),
+    export_replay: args => editor.exportReplay(args),
+    get_replay_export: args => editor.getReplayExport(args),
     set_camera: ({ preset, position, target, projection }) => {
       const explicitPose = position !== undefined || target !== undefined;
       if (preset !== undefined) {

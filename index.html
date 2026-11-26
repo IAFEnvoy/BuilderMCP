@@ -53,47 +53,49 @@
 
       <section class="editor" aria-label="三维视图">
         <div class="viewbar">
-          <div class="view-title"><i data-icon="cuboid"></i>三维视图</div>
-          <div class="view-actions">
+          <div class="view-actions" id="tools" role="group" aria-label="编辑工具">
             <button class="icon-button" id="undo" title="撤销 (Ctrl+Z)" aria-label="撤销" aria-keyshortcuts="Control+z" disabled><i data-icon="undo-2"></i></button>
             <button class="icon-button" id="redo" title="重做 (Ctrl+Y 或 Ctrl+Shift+Z)" aria-label="重做" aria-keyshortcuts="Control+y Control+Shift+z" disabled><i data-icon="redo-2"></i></button>
             <span class="toolbar-divider"></span>
             <button class="icon-button" id="copy-selection" title="复制选区 (Ctrl+C)" aria-label="复制选区" aria-keyshortcuts="Control+c Meta+c" disabled><i data-icon="copy"></i></button>
             <button class="icon-button" id="paste-selection" data-tool="paste" title="粘贴选区 (Ctrl+V)" aria-label="粘贴选区" aria-keyshortcuts="Control+v Meta+v" aria-pressed="false" disabled><i data-icon="clipboard-paste"></i></button>
             <span class="toolbar-divider"></span>
+            <button data-tool="select" class="icon-button" title="选择 (V) · Shift 多选" aria-label="选择" aria-pressed="true"><i data-icon="mouse-pointer-2"></i></button>
+            <button data-tool="place" class="icon-button" title="放置 (P)" aria-label="放置" aria-pressed="false" disabled><i data-icon="plus"></i></button>
+            <button data-tool="replace" class="icon-button" title="替换方块 (R)" aria-label="替换方块" aria-keyshortcuts="R" aria-pressed="false" disabled><i data-icon="replace"></i></button>
+            <button data-tool="erase" class="icon-button" title="擦除 (E)" aria-label="擦除" aria-pressed="false"><i data-icon="eraser"></i></button>
+            <span class="toolbar-divider"></span>
+            <button data-tool="box" class="icon-button" title="框选 (B)" aria-label="框选" aria-pressed="false"><i data-icon="square-dashed-mouse-pointer"></i></button>
+            <button data-tool="fill" class="icon-button" title="批量放置 (G)" aria-label="批量放置" aria-pressed="false" disabled><i data-icon="paint-bucket"></i></button>
+            <button data-tool="pick" class="icon-button" title="吸取方块 (I) · 中键单击" aria-label="吸取方块" aria-pressed="false"><i data-icon="pipette"></i></button>
+          </div>
+          <div class="view-actions" role="group" aria-label="视图操作">
             <button class="icon-button" id="grid-toggle" title="显示网格" aria-label="显示网格" aria-pressed="true"><i data-icon="grid-3x3"></i></button>
             <button class="icon-button" id="frame" title="聚焦建筑 (F)" aria-label="聚焦建筑"><i data-icon="scan"></i></button>
-            <button class="icon-button" id="screenshot" title="保存视图截图" aria-label="保存视图截图"><i data-icon="camera"></i></button>
+            <span class="toolbar-divider"></span>
+            <button class="icon-button view-preset" data-preset="angled" aria-pressed="true" title="斜视">斜视</button>
+            <button class="icon-button view-preset" data-preset="isometric" aria-pressed="false" title="等轴视角">等轴</button>
+            <span class="toolbar-divider"></span>
             <button class="icon-button" id="export-image" title="导出透明 PNG" aria-label="导出透明 PNG" disabled><i data-icon="image-down"></i></button>
+            <button class="icon-button" id="record-edits" title="录制操作" aria-label="录制操作" disabled><i data-icon="circle-dot"></i></button>
+            <button class="icon-button" id="replay-edits" title="回放操作" aria-label="回放操作" disabled><i data-icon="play"></i></button>
           </div>
         </div>
         <div class="viewport" id="viewport">
           <div id="view-error" class="view-error" hidden></div>
-          <div class="tools" id="tools" aria-label="编辑工具">
-            <button data-tool="select" class="icon-button" title="选取 (V) · Shift 多选" aria-label="选取" aria-pressed="true"><i data-icon="mouse-pointer-2"></i></button>
-            <button data-tool="place" class="icon-button" title="放置 (P)" aria-label="放置" aria-pressed="false" disabled><i data-icon="plus"></i></button>
-            <button data-tool="replace" class="icon-button" title="替换方块 (R)" aria-label="替换方块" aria-keyshortcuts="R" aria-pressed="false" disabled><i data-icon="replace"></i></button>
-            <button data-tool="erase" class="icon-button" title="擦除 (E)" aria-label="擦除" aria-pressed="false"><i data-icon="eraser"></i></button>
-            <span class="tool-divider"></span>
-            <button data-tool="box" class="icon-button" title="区域选取 (B)" aria-label="区域选取" aria-pressed="false"><i data-icon="square-dashed-mouse-pointer"></i></button>
-            <button data-tool="fill" class="icon-button" title="区域填充 (G)" aria-label="区域填充" aria-pressed="false" disabled><i data-icon="paint-bucket"></i></button>
-            <button data-tool="pick" class="icon-button" title="吸取方块 (I)" aria-label="吸取方块" aria-pressed="false"><i data-icon="pipette"></i></button>
-          </div>
           <div class="view-widget">
-            <canvas id="compass" width="90" height="90" aria-label="坐标轴"></canvas>
+            <div class="view-compass" role="group" aria-label="坐标轴">
+              <canvas id="compass" width="90" height="90" aria-hidden="true"></canvas>
+              <button type="button" class="compass-endpoint" data-axis-view="right" aria-label="X 轴侧视" title="从 +X 方向侧视"></button>
+              <button type="button" class="compass-endpoint" data-axis-view="top" aria-label="Y 轴俯视" title="从 +Y 方向俯视"></button>
+              <button type="button" class="compass-endpoint" data-axis-view="front" aria-label="Z 轴正视" title="从 +Z 方向正视"></button>
+            </div>
             <div class="view-presets" role="group" aria-label="相机投影">
               <button data-projection="perspective" aria-pressed="true" title="透视投影">透视</button>
               <button data-projection="orthographic" aria-pressed="false" title="正交投影">正交</button>
             </div>
-            <div class="view-presets" role="group" aria-label="相机预设">
-              <button data-preset="angled" aria-pressed="true" title="斜视">斜视</button>
-              <button data-preset="isometric" aria-pressed="false" title="等轴视角">等轴</button>
-              <button data-preset="front" aria-pressed="false" title="南侧正视">正视</button>
-              <button data-preset="right" aria-pressed="false" title="东侧侧视">侧视</button>
-              <button data-preset="top" aria-pressed="false" title="俯视">俯视</button>
-            </div>
           </div>
-          <div class="canvas-hints" id="canvas-hints"><span><i data-icon="mouse"></i>中键旋转</span><span>右键平移</span><span>滚轮缩放</span></div>
+          <div class="canvas-hints" id="canvas-hints"><span><i data-icon="mouse"></i>中键单击吸取 · 拖动旋转</span><span>右键平移</span><span>滚轮缩放</span></div>
           <button class="icon-button help-button" id="help" aria-label="操作快捷键" title="操作快捷键"><i data-icon="circle-help"></i></button>
         </div>
       </section>
@@ -147,7 +149,7 @@
 
     <footer class="statusbar">
       <div class="status-message"><span class="status-dot"></span><span id="status-message" role="status">就绪</span></div>
-      <div class="status-data"><span id="cursor-position" class="coordinates">X — &nbsp; Y — &nbsp; Z —</span><label class="work-layer"><i data-icon="layers"></i>工作层 <input id="work-layer" type="number" min="-1000000" max="1000000" value="0" aria-label="工作层 Y 坐标" /></label><span class="edition" id="edition">Minecraft Java</span></div>
+      <div class="status-data"><span id="replay-progress" hidden></span><span id="cursor-position" class="coordinates">X — &nbsp; Y — &nbsp; Z —</span><label class="work-layer"><i data-icon="layers"></i>工作层 <input id="work-layer" type="number" min="-1000000" max="1000000" value="0" aria-label="工作层 Y 坐标" /></label><span class="edition" id="edition">Minecraft Java</span></div>
     </footer>
 
     <dialog id="pack-dialog" class="dialog">
@@ -216,9 +218,10 @@
     <dialog id="help-dialog" class="dialog compact">
       <div class="dialog-header"><h2>操作快捷键</h2><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
       <dl class="shortcuts">
-        <div><dt>选取 / 多选</dt><dd><kbd>V</kbd><kbd>Shift</kbd> + 点击</dd></div>
+        <div><dt>选择 / 多选</dt><dd><kbd>V</kbd><kbd>Shift</kbd> + 点击</dd></div>
         <div><dt>放置 / 替换 / 擦除 / 吸取</dt><dd><kbd>P</kbd><kbd>R</kbd><kbd>E</kbd><kbd>I</kbd></dd></div>
-        <div><dt>区域选取 / 填充</dt><dd><kbd>B</kbd><kbd>G</kbd></dd></div>
+        <div><dt>吸取 / 旋转视角</dt><dd>中键单击 / 拖动</dd></div>
+        <div><dt>框选 / 批量放置</dt><dd><kbd>B</kbd><kbd>G</kbd></dd></div>
         <div><dt>复制 / 粘贴选区</dt><dd><kbd>Ctrl+C</kbd><kbd>Ctrl+V</kbd></dd></div>
         <div><dt>全选 / 删除选区</dt><dd><kbd>Ctrl+A</kbd><kbd>Del</kbd></dd></div>
         <div><dt>聚焦 / 搜索</dt><dd><kbd>F</kbd><kbd>/</kbd></dd></div>
