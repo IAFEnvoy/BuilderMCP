@@ -2,7 +2,7 @@ import {
   Box, Boxes, BoxSelect, Check, ChevronDown, CircleAlert, CircleDot, CircleHelp, ClipboardPaste, Copy,
   Download, Eraser, FileBox, FilePlus, FolderArchive, FolderOpen, Grid3x3, GripVertical, ImageDown, Languages, Layers, Mouse, MousePointer2,
   Move3d, Package, PackagePlus, PaintBucket, Pipette, Play, Plus, Redo2, RefreshCw, Replace, RotateCcw, RotateCw,
-  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, Square, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
+  Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, Square, SquareDashedMousePointer, Star, Trash2, Undo2, X, createElement,
 } from 'lucide';
 import { isAbsolute } from '@tauri-apps/api/path';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -27,6 +27,7 @@ const palette = byId('palette');
 const paletteScroll = byId('palette-scroll');
 const paletteSearch = byId('palette-search');
 const paletteHighlight = byId('palette-highlight');
+const paletteFavorites = byId('palette-favorites');
 const brushPopover = byId('brush-popover');
 const brushFields = byId('brush-properties');
 const modIdFilter = byId('block-mod-id');
@@ -45,6 +46,7 @@ const compass = byId('compass');
 const compassEndpoints = new Map([...document.querySelectorAll('[data-axis-view]')].map(button => [button.dataset.axisView, button]));
 const brushTools = new Set(['place', 'replace', 'fill']);
 const PALETTE_PAGE_SIZE = 120;
+const FAVORITES_KEY = 'buildermcp.blockFavorites';
 const REPLAY_STEP_MS = 200;
 const modelPreview = new ModelPreview();
 const icons = {
@@ -56,7 +58,7 @@ const icons = {
   'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, play: Play, plus: Plus, 'redo-2': Redo2, 'refresh-cw': RefreshCw, replace: Replace,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
   'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, square: Square, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
-  'trash-2': Trash2, 'undo-2': Undo2, x: X,
+  star: Star, 'trash-2': Trash2, 'undo-2': Undo2, x: X,
 };
 
 function icon(name) {
@@ -86,6 +88,8 @@ let brushEntity;
 let brushPopoverTile;
 let tool = 'select';
 let category = 'all';
+let favoritesOnly = false;
+let favoriteBlocks = readBlockFavorites();
 let firstCorner = null;
 let currentPreset = DEFAULT_CAMERA_PRESET;
 let currentFile = null;
@@ -241,9 +245,28 @@ function resetPalette() {
   renderPalette();
 }
 
+function readBlockFavorites() {
+  try {
+    const names = JSON.parse(localStorage.getItem(FAVORITES_KEY));
+    if (Array.isArray(names)) return new Set(names.filter(name => typeof name === 'string'));
+  } catch (error) {
+    console.warn('Could not read block favorites', error);
+  }
+  return new Set();
+}
+
+function updateFavoriteButton(button, block) {
+  const saved = favoriteBlocks.has(block.name);
+  button.setAttribute('aria-label', `收藏 ${block.label}`);
+  button.setAttribute('aria-pressed', String(saved));
+  button.title = saved ? '取消收藏' : '收藏方块';
+}
+
 function updateSearchHighlight() {
+  if (!viewport) return;
   const query = paletteSearch.value.trim();
-  viewport?.setSearchHighlight(paletteHighlight.checked && query ? catalog.searchMatcher(query, category, modIdFilter.value) : null);
+  const match = paletteHighlight.checked && query ? catalog.searchMatcher(query, category, modIdFilter.value) : null;
+  viewport.setSearchHighlight(match && favoritesOnly ? name => favoriteBlocks.has(name) && match(name) : match);
 }
 
 function renderPalette(resetScroll = true) {
@@ -253,17 +276,19 @@ function renderPalette(resetScroll = true) {
     paletteCatalog = catalog;
   }
   updateSearchHighlight();
-  const matches = catalog.find(paletteSearch.value, category, modIdFilter.value);
+  const found = catalog.find(paletteSearch.value, category, modIdFilter.value);
+  const matches = favoritesOnly ? found.filter(block => favoriteBlocks.has(block.name)) : found;
   const visible = matches.slice(0, paletteLimit);
   byId('palette-count').textContent = matches.length.toLocaleString();
   if (resetScroll) paletteScroll.scrollTop = 0;
   const visibleNames = new Set(visible.map(block => block.name));
-  const tiles = new Map();
+  const cards = new Map();
   for (const tile of palette.querySelectorAll('[data-block]')) {
-    if (visibleNames.has(tile.dataset.block)) tiles.set(tile.dataset.block, tile);
+    const card = tile.parentElement;
+    if (visibleNames.has(tile.dataset.block)) cards.set(tile.dataset.block, card);
     else {
       if (tile === brushPopoverTile) brushPopover.hidePopover();
-      tile.remove();
+      card.remove();
     }
   }
 
@@ -274,24 +299,35 @@ function renderPalette(resetScroll = true) {
     const empty = document.createElement('p');
     empty.className = 'palette-message';
     empty.textContent = catalog.blocks.size ? '没有匹配的方块' : '导入资源包以加载方块';
+    if (catalog.blocks.size && favoritesOnly) {
+      empty.textContent = favoriteBlocks.size ? '没有匹配的收藏方块' : '暂无收藏方块';
+    }
     palette.append(empty);
     return;
   }
 
   let next = palette.firstElementChild;
   for (const block of visible) {
-    let tile = tiles.get(block.name);
-    if (tile) updatePaletteTileLabel(tile, block);
+    let card = cards.get(block.name);
+    if (card) updatePaletteTileLabel(card.firstElementChild, block);
     else {
-      tile = document.createElement('button');
+      card = document.createElement('div');
+      card.className = 'palette-card';
+      const tile = document.createElement('button');
       tile.type = 'button';
       tile.className = 'tile';
       tile.dataset.block = block.name;
       tile.append(document.createElement('span'));
       renderPaletteTile(tile, block);
+      const favorite = document.createElement('button');
+      favorite.type = 'button';
+      favorite.className = 'tile-favorite';
+      favorite.append(icon('star'));
+      card.append(tile, favorite);
     }
-    if (tile !== next) palette.insertBefore(tile, next);
-    next = tile.nextElementSibling;
+    updateFavoriteButton(card.lastElementChild, block);
+    if (card !== next) palette.insertBefore(card, next);
+    next = card.nextElementSibling;
   }
   if (visible.length === matches.length) more?.remove();
   else if (!more) {
@@ -1553,6 +1589,11 @@ byId('palette-filters').addEventListener('click', event => {
 });
 paletteSearch.addEventListener('input', resetPalette);
 paletteHighlight.addEventListener('change', updateSearchHighlight);
+paletteFavorites.addEventListener('click', () => {
+  favoritesOnly = !favoritesOnly;
+  paletteFavorites.setAttribute('aria-pressed', String(favoritesOnly));
+  resetPalette();
+});
 modIdFilter.addEventListener('change', resetPalette);
 byId('block-language').addEventListener('change', event => {
   locale = event.target.value;
@@ -1561,6 +1602,27 @@ byId('block-language').addEventListener('change', event => {
   void loadOfficialLanguage();
 });
 palette.addEventListener('click', event => {
+  const favorite = event.target.closest('.tile-favorite');
+  if (favorite) {
+    const block = catalog.blocks.get(favorite.previousElementSibling.dataset.block);
+    const updated = new Set(favoriteBlocks);
+    if (!updated.delete(block.name)) updated.add(block.name);
+    try {
+      localStorage.setItem(FAVORITES_KEY, JSON.stringify([...updated]));
+    } catch (error) {
+      handleError(new Error('无法保存方块收藏。' + errorMessage(error)));
+      return;
+    }
+    favoriteBlocks = updated;
+    if (!favoritesOnly) {
+      updateFavoriteButton(favorite, block);
+      return;
+    }
+    const focused = document.activeElement === favorite;
+    renderPalette(false);
+    if (focused && !favorite.isConnected) paletteFavorites.focus({ preventScroll: true });
+    return;
+  }
   const tile = event.target.closest('[data-block]');
   if (!tile) return;
   const block = catalog.blocks.get(tile.dataset.block);

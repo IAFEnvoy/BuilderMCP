@@ -34,7 +34,13 @@
     <main class="workspace" aria-label="建筑编辑器">
       <aside class="library" aria-label="方块库">
         <div class="library-top">
-          <div class="panel-heading"><h1><i data-icon="boxes"></i>方块库</h1><span class="count" id="palette-count">0</span></div>
+          <div class="panel-heading">
+            <h1><i data-icon="boxes"></i>方块库</h1>
+            <div class="palette-heading-actions">
+              <button type="button" id="palette-favorites" class="palette-favorites" aria-pressed="false" aria-label="只显示收藏方块" title="只显示收藏方块"><i data-icon="star"></i><span>收藏</span></button>
+              <span class="count" id="palette-count">0</span>
+            </div>
+          </div>
           <label class="search"><i data-icon="search"></i><input type="search" id="palette-search" placeholder="搜索方块或 ID" aria-label="搜索方块或 ID" /><kbd>/</kbd></label>
           <label class="palette-highlight"><input type="checkbox" id="palette-highlight" />高亮场景中的匹配方块</label>
           <label class="palette-select" title="按方块 ID 中冒号前的命名空间筛选"><span><i data-icon="package"></i>Mod ID</span><select id="block-mod-id" disabled><option value="">全部模组</option></select></label>
