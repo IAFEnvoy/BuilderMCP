@@ -91,7 +91,7 @@ let category = 'all';
 let favoritesOnly = false;
 let favoriteBlocks = readBlockFavorites();
 let firstCorner = null;
-let currentPreset = DEFAULT_CAMERA_PRESET;
+let focusPreset = DEFAULT_CAMERA_PRESET;
 let currentFile = null;
 let savedRevision = build.revision;
 let paletteLimit = PALETTE_PAGE_SIZE;
@@ -642,28 +642,24 @@ function updateScene(change = {}) {
   selectionBounds = bounds;
 }
 
-function updateCameraButtons() {
+function updateProjectionButtons() {
   const projection = viewport?.projection;
   for (const button of projectionButtons) button.setAttribute('aria-pressed', String(button.dataset.projection === projection));
-  for (const button of presetButtons) {
-    const active = button.dataset.preset === currentPreset && (currentPreset !== 'isometric' || projection === 'orthographic');
-    button.setAttribute('aria-pressed', String(active));
-  }
 }
 
 function frame(preset, projection) {
   if (preset === undefined) {
-    preset = currentPreset ?? DEFAULT_CAMERA_PRESET;
+    preset = focusPreset;
     projection = viewport?.projection;
   }
   viewport?.frame(preset, projection);
-  currentPreset = preset;
-  updateCameraButtons();
+  focusPreset = preset;
+  updateProjectionButtons();
 }
 
 function setProjection(projection) {
   viewport?.setProjection(projection);
-  updateCameraButtons();
+  updateProjectionButtons();
 }
 
 async function saveViewportImage() {
@@ -1640,7 +1636,11 @@ paletteScroll.addEventListener('scroll', positionBrushPopover);
 window.addEventListener('resize', positionBrushPopover);
 
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => button.closest('dialog').close());
-for (const button of presetButtons) button.addEventListener('click', () => frame(button.dataset.preset));
+for (const button of presetButtons) button.addEventListener('click', () => {
+  const preset = button.dataset.preset;
+  viewport?.rotateToPreset(preset);
+  focusPreset = preset;
+});
 for (const button of projectionButtons) button.addEventListener('click', () => setProjection(button.dataset.projection));
 for (const [view, endpoint] of compassEndpoints) endpoint.addEventListener('click', () => frame(view, viewport?.projection));
 for (const button of document.querySelectorAll('[data-rotation]')) button.addEventListener('click', () => {
@@ -1853,8 +1853,8 @@ if (desktop) {
       setCamera: (position, target, projection) => {
         if (!viewport) throw new Error('The viewport is unavailable.');
         viewport.setCamera(position, target, projection);
-        currentPreset = null;
-        updateCameraButtons();
+        focusPreset = DEFAULT_CAMERA_PRESET;
+        updateProjectionButtons();
       },
       setProjection: projection => {
         if (!viewport) throw new Error('The viewport is unavailable.');

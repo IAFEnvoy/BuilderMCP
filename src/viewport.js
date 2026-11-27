@@ -21,6 +21,11 @@ const CHUNK_SIZE = 16;
 const chunkIndex = n => Math.floor(n / CHUNK_SIZE);
 const chunkKey = (x, y, z) => [chunkIndex(x), chunkIndex(y), chunkIndex(z)].join(',');
 
+function presetDirection(preset) {
+  if (!Object.hasOwn(VIEWS, preset)) throw new Error('未知视角。');
+  return new THREE.Vector3(...VIEWS[preset]).normalize();
+}
+
 function workGrid() {
   const geometry = new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
   const material = new THREE.ShaderMaterial({
@@ -587,12 +592,20 @@ export class Viewport {
     this.invalidate();
   }
 
+  rotateToPreset(preset) {
+    if (this.replaying) throw new Error('回放期间相机视角固定。');
+    const direction = presetDirection(preset);
+    const distance = this.controls.getDistance();
+    this.camera.position.copy(this.controls.target).addScaledVector(direction, distance);
+    this.controls.update();
+    this.invalidate();
+  }
+
   frame(preset, projection = preset === 'isometric' ? 'orthographic' : this.projection) {
-    if (!Object.hasOwn(VIEWS, preset)) throw new Error('未知视角。');
+    const eye = presetDirection(preset);
     this.setProjection(projection);
     const bounds = this.build.bounds ?? { min: [-3, -1, -3], max: [3, 2, 3], size: [7, 4, 7] };
     const target = new THREE.Vector3(...bounds.min.map((n, i) => n + bounds.size[i] / 2));
-    const eye = new THREE.Vector3(...VIEWS[preset]).normalize();
     const right = Y_UP.clone().cross(eye).normalize();
     const up = eye.clone().cross(right);
     const aspect = this.perspectiveCamera.aspect;
