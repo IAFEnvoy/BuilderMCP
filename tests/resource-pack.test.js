@@ -111,6 +111,11 @@ test('palette filtering uses exact namespaces and combines with category and lan
   assert.deepEqual(catalog.find('dark tile', 'stone', 'sample').map(block => block.name), ['sample:slate_tiles']);
   assert.deepEqual(catalog.find('slate', 'wood', 'sample'), []);
   assert.deepEqual(catalog.find('', 'all', 'sam'), []);
+
+  const matches = catalog.searchMatcher('slate', 'stone', 'sample');
+  assert.equal(matches('sample:slate_wall'), true);
+  assert.equal(matches('sample_plus:slate_wall'), false);
+  assert.equal(matches('sample:oak_trim'), false);
 });
 
 test('selection properties use common values and include states stored only in the project', async () => {

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { boxBetween, boundsOf, MAX_COORDINATE } from './scene.js';
+import { boxBetween, boundsOf, MAX_BLOCKS, MAX_COORDINATE } from './scene.js';
 import { applyTexture, buildGeometry, materialKey, tintFor } from './model-geometry.js';
 import { createTexturePlayer } from './texture-animation.js';
 
@@ -71,6 +71,36 @@ function outline(color) {
   return line;
 }
 
+function searchOutline(position) {
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setAttribute('position', position);
+  geometry.setAttribute('cell', new THREE.InstancedBufferAttribute(new Float32Array(MAX_BLOCKS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  geometry.instanceCount = 0;
+  const material = new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color('#9eb4ff') } },
+    transparent: true, depthTest: false, depthWrite: false,
+    vertexShader: `
+      attribute vec3 cell;
+      void main() {
+        vec3 point = position * 1.024 + cell + vec3(0.5);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(point, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 color;
+      void main() {
+        gl_FragColor = vec4(color, 0.85);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.renderOrder = 3;
+  // The box geometry's bounds do not include the instance offsets.
+  lines.frustumCulled = false;
+  return lines;
+}
+
 function showBox(object, box) {
   object.visible = Boolean(box);
   if (!box) return;
@@ -111,6 +141,8 @@ export class Viewport {
     this.group = new THREE.Group();
     this.hoverOutline = outline('#ffd28b');
     this.selectionOutline = outline('#64d3cb');
+    this.searchMatch = null;
+    this.searchHighlightDirty = false;
     this.world.add(this.grid, this.group, this.hoverOutline, this.selectionOutline);
     this.chunks = new Map();
     this.views = new Map();
@@ -229,6 +261,7 @@ export class Viewport {
   render() {
     this.updateClippingPlanes();
     this.updateMarkers();
+    this.updateSearchOutline();
     const distance = this.viewDistance;
     this.grid.position.set(this.controls.target.x, this.layer - 0.009, this.controls.target.z);
     this.grid.scale.setScalar(Math.max(25, distance * 1.25));
@@ -257,7 +290,10 @@ export class Viewport {
       this.rebuild();
       return;
     }
-    if (changes) this.updateBlocks(changes, side);
+    if (changes) {
+      this.updateBlocks(changes, side);
+      this.searchHighlightDirty = true;
+    }
     this.updateSelection();
   }
 
@@ -321,6 +357,7 @@ export class Viewport {
       this.chunks.get(chunk).set(key, block);
     }
     for (const key of this.chunks.keys()) this.rebuildChunk(key);
+    this.searchHighlightDirty = true;
     this.updateSelection();
   }
 
@@ -402,6 +439,46 @@ export class Viewport {
   updateSelection() {
     showBox(this.selectionOutline, this.replaying ? null : boundsOf(this.build.selected));
     this.invalidate();
+  }
+
+  setSearchHighlight(match) {
+    if (match === this.searchMatch) return;
+    this.searchMatch = match;
+    this.searchHighlightDirty = true;
+    this.invalidate();
+  }
+
+  updateSearchOutline() {
+    if (!this.searchHighlightDirty) return;
+    this.searchHighlightDirty = false;
+    if (!this.searchMatch || this.replaying) {
+      if (this.searchOutline) this.searchOutline.visible = false;
+      return;
+    }
+    if (!this.searchOutline) {
+      this.searchOutline = searchOutline(this.selectionOutline.geometry.getAttribute('position'));
+      this.world.add(this.searchOutline);
+    }
+
+    const geometry = this.searchOutline.geometry;
+    const cells = geometry.getAttribute('cell');
+    const matches = new Map();
+    let count = 0;
+    for (const { pos, state: { name } } of this.build.blocks.values()) {
+      let match = matches.get(name);
+      if (match === undefined) {
+        match = this.searchMatch(name);
+        matches.set(name, match);
+      }
+      if (match) cells.setXYZ(count++, ...pos);
+    }
+    geometry.instanceCount = count;
+    this.searchOutline.visible = count > 0;
+    if (count) {
+      cells.clearUpdateRanges();
+      cells.addUpdateRange(0, count * 3);
+      cells.needsUpdate = true;
+    }
   }
 
   setHover(a, b = a, color = '#ffd28b') {

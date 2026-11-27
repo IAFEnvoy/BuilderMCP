@@ -312,11 +312,19 @@ export class BlockCatalog {
     return lookup(locale) ?? (locale === ENGLISH_LOCALE ? undefined : lookup(ENGLISH_LOCALE)) ?? blockKey;
   }
 
-  find(query = '', category = 'all', namespace = '') {
+  searchMatcher(query = '', category = 'all', namespace = '') {
     const text = query.trim().toLocaleLowerCase();
+    const prefix = namespace ? namespace + ':' : '';
+    return (name, block = this.blocks.get(name)) => name.startsWith(prefix) &&
+      (category === 'all' || category === (block?.category ?? categoryOf(name))) &&
+      (name.includes(text) || (block?.label ?? this.label(name)).toLowerCase().includes(text) ||
+        this.label(name, ENGLISH_LOCALE).toLowerCase().includes(text));
+  }
+
+  find(query = '', category = 'all', namespace = '') {
     const candidates = namespace ? this.#blocksByNamespace.get(namespace) ?? [] : this.blocks.values();
-    return [...candidates].filter(block => (category === 'all' || category === block.category) &&
-      (block.name.includes(text) || block.label.toLowerCase().includes(text) || this.label(block.name, ENGLISH_LOCALE).toLowerCase().includes(text)));
+    const matches = this.searchMatcher(query, category);
+    return [...candidates].filter(block => matches(block.name, block));
   }
 
   state(input) {

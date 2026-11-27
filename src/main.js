@@ -25,6 +25,8 @@ import { DEFAULT_CAMERA_PRESET, drawCompass, Viewport } from './viewport.js';
 const byId = id => document.getElementById(id);
 const palette = byId('palette');
 const paletteScroll = byId('palette-scroll');
+const paletteSearch = byId('palette-search');
+const paletteHighlight = byId('palette-highlight');
 const brushPopover = byId('brush-popover');
 const brushFields = byId('brush-properties');
 const modIdFilter = byId('block-mod-id');
@@ -239,13 +241,19 @@ function resetPalette() {
   renderPalette();
 }
 
+function updateSearchHighlight() {
+  const query = paletteSearch.value.trim();
+  viewport?.setSearchHighlight(paletteHighlight.checked && query ? catalog.searchMatcher(query, category, modIdFilter.value) : null);
+}
+
 function renderPalette(resetScroll = true) {
   if (paletteCatalog !== catalog) {
     brushPopover.hidePopover();
     palette.replaceChildren();
     paletteCatalog = catalog;
   }
-  const matches = catalog.find(byId('palette-search').value, category, modIdFilter.value);
+  updateSearchHighlight();
+  const matches = catalog.find(paletteSearch.value, category, modIdFilter.value);
   const visible = matches.slice(0, paletteLimit);
   byId('palette-count').textContent = matches.length.toLocaleString();
   if (resetScroll) paletteScroll.scrollTop = 0;
@@ -1510,7 +1518,8 @@ byId('palette-filters').addEventListener('click', event => {
   for (const filter of byId('palette-filters').children) filter.setAttribute('aria-pressed', String(filter === button));
   resetPalette();
 });
-byId('palette-search').addEventListener('input', resetPalette);
+paletteSearch.addEventListener('input', resetPalette);
+paletteHighlight.addEventListener('change', updateSearchHighlight);
 modIdFilter.addEventListener('change', resetPalette);
 byId('block-language').addEventListener('change', event => {
   locale = event.target.value;
@@ -1683,7 +1692,7 @@ document.addEventListener('keydown', event => {
   if (shortcut[key]) toggleTool(shortcut[key]);
   if (key === 'f') frame();
   if (key === 'delete') build.removeSelection();
-  if (key === '/') { event.preventDefault(); byId('palette-search').focus(); }
+  if (key === '/') { event.preventDefault(); paletteSearch.focus(); }
 });
 
 let compassOrientation;
@@ -1700,6 +1709,7 @@ try {
 } catch (error) {
   byId('view-error').textContent = `无法启动 WebGL 2。${errorMessage(error)}`;
   byId('view-error').hidden = false;
+  paletteHighlight.disabled = true;
   for (const button of [...projectionButtons, ...presetButtons, ...compassEndpoints.values()]) button.disabled = true;
   console.error(error);
 }
