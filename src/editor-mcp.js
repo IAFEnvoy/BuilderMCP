@@ -17,6 +17,7 @@ export function editorMcp(scene, editor) {
     new_project: args => editor.newProject(args),
     open_project: args => editor.openProject(args),
     save_project: args => editor.saveProject(args),
+    import_resource_pack: args => editor.importResourcePack(args),
     list_blocks: ({ from, to, offset, limit }) => {
       const bounds = from === undefined && to === undefined ? null : boxBetween(point(from), point(to));
       const blocks = [...scene.blocks.values()].filter(({ pos }) => !bounds || inBox(pos, bounds));

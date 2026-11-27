@@ -75,9 +75,14 @@ impl Bridge {
                 json!({ "id": id.to_string(), "name": name, "arguments": arguments }),
             )
             .map_err(|error| error.to_string())?;
-        tokio::time::timeout(Duration::from_secs(30), recv)
+        let timeout = if name == "import_resource_pack" {
+            120
+        } else {
+            30
+        };
+        tokio::time::timeout(Duration::from_secs(timeout), recv)
             .await
-            .map_err(|_| "The editor did not respond within 30 seconds.")?
+            .map_err(|_| format!("The editor did not respond within {timeout} seconds."))?
             .map_err(|_| "The editor closed before responding.")?
     }
 }

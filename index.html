@@ -200,7 +200,13 @@
 
     <dialog id="mcp-dialog" class="dialog compact">
       <div class="dialog-header"><div><h2>MCP 连接</h2><p id="mcp-dialog-status"></p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
-      <div class="dialog-fields"><label>Streamable HTTP 地址<input id="mcp-address" readonly /></label></div>
+      <div class="dialog-fields">
+        <label>Streamable HTTP 地址<input id="mcp-address" readonly /></label>
+        <div class="mcp-permission">
+          <label><input id="mcp-allow-pack-import" type="checkbox" aria-describedby="mcp-pack-import-note" disabled />允许 MCP 导入资源包</label>
+          <p id="mcp-pack-import-note">允许本机 MCP 客户端向全局资源库添加资源包。重新打开编辑器后恢复关闭。</p>
+        </div>
+      </div>
       <div class="dialog-actions"><button class="button primary" id="copy-mcp"><i data-icon="copy"></i>复制地址</button></div>
     </dialog>
 

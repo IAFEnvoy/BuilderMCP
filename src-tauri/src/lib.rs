@@ -42,6 +42,9 @@ async fn import_resource_pack(
     store: State<'_, PackStore>,
     path: PathBuf,
 ) -> Result<PackInfo, String> {
+    if !path.is_absolute() {
+        return Err("请提供资源包 ZIP、JAR 或文件夹的绝对路径。".into());
+    }
     let store = store.inner().clone();
     file_io(move || store.import(&path)).await
 }

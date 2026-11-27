@@ -14,6 +14,7 @@ import {
   packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveReplayFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
+import { mcpResourcePackSource } from './desktop.js';
 import { DEFAULT_LOCALE, ENGLISH_LOCALE, LOCALE_KEY, localeName, normalizeLocale } from './locales.js';
 import { dataVersionFor, minecraftVersionFor, MINECRAFT_RELEASES } from './minecraft-versions.js';
 import { ModelPreview } from './model-preview.js';
@@ -101,6 +102,7 @@ const replayExports = new Map();
 let mcp = { url: '', error: desktop ? '' : '请使用桌面应用启动 MCP 服务。' };
 let viewport;
 let toastTimer;
+let allowMcpPackImport = false;
 
 const tools = {
   select: '点击选择，Shift + 点击多选',
@@ -1268,19 +1270,22 @@ async function loadPack(pack, total, completed) {
   });
 }
 
-function packAction(action, refreshList = renderPacks) {
-  const pending = packQueue.then(() => runPackAction(action, refreshList));
-  packQueue = pending.catch(handleError);
+function packAction(action, { refreshList = renderPacks, propagateError = false } = {}) {
+  const pending = packQueue.then(() => runPackAction(action, refreshList, propagateError));
+  packQueue = pending.catch(error => {
+    if (!propagateError) handleError(error);
+  });
   return pending;
 }
 
-async function runPackAction(action, refreshList) {
+async function runPackAction(action, refreshList, propagateError) {
   packBusy = true;
   const message = byId('pack-error');
   message.hidden = true;
   updatePackControls();
-  try { await action(); }
+  try { return await action(); }
   catch (error) {
+    if (propagateError) throw error;
     message.textContent = errorMessage(error);
     message.hidden = false;
     if (!byId('pack-dialog').open) handleError(error);
@@ -1299,7 +1304,7 @@ function savePackOrder(displayOrder, movedId) {
     packs = new Map(ids.map(id => [id, packs.get(id)]));
     updateCatalog();
     status(`已调整 ${packs.get(movedId).name} 的加载顺序`);
-  }, () => {
+  }, { refreshList: () => {
     const savedOrder = [...packs.keys()].reverse();
     if (packSorter.toArray().some((id, index) => id !== savedOrder[index])) {
       packSorter.sort(savedOrder, true);
@@ -1308,11 +1313,11 @@ function savePackOrder(displayOrder, movedId) {
     if (byId('pack-dialog').open) {
       packList.querySelector(`[data-pack-id="${CSS.escape(movedId)}"] .pack-handle`)?.focus({ preventScroll: true });
     }
-  });
+  } });
 }
 
 async function importPack(path, total, completed, name) {
-  showPackProgress({ total, completed, name, stage: '复制到 AppData' });
+  showPackProgress({ total, completed, name, stage: '保存资源包' });
   const pack = await packsOnDisk.import(path);
   try {
     pack.data = await loadPack(pack, total, completed);
@@ -1327,23 +1332,23 @@ async function importPack(path, total, completed, name) {
     throw error;
   }
   packs.set(pack.id, pack);
+  return pack;
 }
 
 async function importPacks(paths) {
-  if (!paths.length) return;
+  if (!paths.length) return [];
   const failures = [];
   const total = paths.length;
-  let imported = 0;
+  const imported = [];
   for (const [completed, path] of paths.entries()) {
     const { filename } = fileInfo(path);
     try {
-      await importPack(path, total, completed, filename);
-      imported++;
+      imported.push(await importPack(path, total, completed, filename));
     } catch (error) {
       failures.push(`${filename} · ${errorMessage(error)}`);
     }
   }
-  if (imported) {
+  if (imported.length) {
     showPackProgress({ total, completed: total, stage: '更新方块库' });
     try {
       await packsOnDisk.setOrder([...packs.keys()]);
@@ -1352,8 +1357,30 @@ async function importPacks(paths) {
     }
     updateCatalog();
   }
-  status(`已导入 ${imported} / ${total} 个资源包`);
+  status(`已导入 ${imported.length} / ${total} 个资源包`);
   if (failures.length) throw new Error(failures.join('\n'));
+  return imported;
+}
+
+function requireMcpPackImport() {
+  if (!allowMcpPackImport) {
+    throw new Error('Resource pack import is disabled. Enable it in the editor’s MCP settings.');
+  }
+}
+
+function importMcpResourcePack({ path }) {
+  requireMcpPackImport();
+  if (typeof path !== 'string' || !path.trim() || path.includes('\0')) {
+    throw new Error('Provide an absolute resource pack path.');
+  }
+  return packAction(async () => {
+    requireMcpPackImport();
+    showPackProgress({ total: 1, name: fileInfo(path).filename, stage: '读取文件' });
+    const source = await mcpResourcePackSource(path);
+    requireMcpPackImport();
+    const [{ id, name, kind, data }] = await importPacks([source]);
+    return { id, name, kind, blockStateCount: data.states.size };
+  }, { propagateError: true });
 }
 
 async function loadPacks() {
@@ -1582,7 +1609,18 @@ function renderMcp() {
   byId('mcp-dialog-status').textContent = description;
   byId('mcp-address').value = mcp.url;
   byId('copy-mcp').disabled = !mcp.url;
+  const permission = byId('mcp-allow-pack-import');
+  permission.checked = allowMcpPackImport;
+  permission.disabled = !online;
 }
+
+byId('mcp-allow-pack-import').addEventListener('click', event => {
+  if (!event.isTrusted) {
+    event.preventDefault();
+    return;
+  }
+  allowMcpPackImport = event.currentTarget.checked;
+});
 
 onClick('mcp-status', () => { renderMcp(); byId('mcp-dialog').showModal(); });
 onClick('copy-mcp', async () => {
@@ -1684,6 +1722,7 @@ if (desktop) {
   try {
     const editor = {
       projectInfo,
+      importResourcePack: importMcpResourcePack,
       applyHistory,
       copySelection,
       startRecording,

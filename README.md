@@ -76,6 +76,7 @@ npm run tauri dev
 | --- | --- |
 | 新建、打开和保存结构 | `new_project`、`open_project`、`save_project` |
 | 读取场景、方块及状态 | `get_scene`、`list_blocks`、`search_palette` |
+| 导入全局资源包 | `import_resource_pack` |
 | 放置、替换、填充、删除 | `set_blocks`、`fill_box`、`remove_box` |
 | 选区、移动、旋转、缩放和撤销 | `select_box`、`transform_selection`、`undo_redo` |
 | 复制和粘贴选区 | `copy_selection`、`paste_selection` |
@@ -85,6 +86,8 @@ npm run tauri dev
 | 导出建筑 | `export_structure` |
 
 `search_palette` 可传 `"mod_id": "minecraft"` 只查原版方块，也可以同时传 `query` 搜索名称。
+
+`import_resource_pack` 接受运行编辑器的机器上的绝对 `path`。桌面版支持 ZIP、JAR 和包含 `assets` 的解包资源包目录，侧栏模式支持 ZIP 和 JAR。用户需要先在顶部「MCP」面板勾选「允许 MCP 导入资源包」。权限仅在本次编辑器会话有效。工具返回时，新包已位于全局资源包列表顶部，可用 `search_palette` 查询方块。
 
 调用 `select_box` 和 `copy_selection` 后，向 `paste_selection` 传入目标 `origin` 即可放置副本。MCP 和编辑器共用剪贴板。
 

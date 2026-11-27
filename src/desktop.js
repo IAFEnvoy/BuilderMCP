@@ -25,6 +25,25 @@ export function fileInfo(path) {
   return { filename, name: filename.slice(0, dot), extension: filename.slice(dot + 1).toLowerCase() };
 }
 
+export async function mcpResourcePackSource(path) {
+  if (desktop) return path;
+  const { filename, extension } = fileInfo(path);
+  if (!PACK_ARCHIVE_FORMATS.includes(extension)) throw new Error('The sidebar accepts .zip and .jar resource packs.');
+
+  const url = new URL('api/file', location.href);
+  url.searchParams.set('path', path);
+  const response = await fetch(url);
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null);
+    throw new Error(failure?.error ?? 'Could not read the resource pack (HTTP ' + response.status + ').');
+  }
+  if (Number(response.headers.get('content-length')) > 384 * 1024 * 1024) {
+    await response.body?.cancel();
+    throw new Error('The resource pack exceeds 384 MiB.');
+  }
+  return new File([await response.blob()], filename);
+}
+
 export function structureFileInfo(path) {
   if (typeof path !== 'string') throw new Error('请提供结构文件路径。');
   const { name, extension } = fileInfo(path);
