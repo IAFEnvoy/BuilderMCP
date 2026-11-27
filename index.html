@@ -10,10 +10,10 @@
   </head>
   <body>
     <header class="topbar">
-      <button class="project-tab" id="project-settings" title="项目设置">
-        <i data-icon="file-box"></i><span id="project-name">未命名建筑</span><span id="project-dirty" class="dirty-dot" hidden></span>
-        <i data-icon="chevron-down" class="chevron"></i>
-      </button>
+      <div class="project-strip">
+        <nav class="project-tabs" id="project-tabs" aria-label="打开的项目"></nav>
+        <button class="icon-button small" id="project-settings" title="当前项目设置" aria-label="当前项目设置"><i data-icon="settings-2"></i></button>
+      </div>
       <div class="topbar-actions">
         <button class="button quiet" id="project-new" title="新建 (Ctrl+N)" aria-keyshortcuts="Control+n"><i data-icon="file-plus"></i><span>新建</span></button>
         <button class="button quiet" id="project-open" title="打开结构文件 (Ctrl+O)" aria-keyshortcuts="Control+o"><i data-icon="folder-open"></i><span>打开</span></button>
@@ -207,26 +207,24 @@
     </dialog>
 
     <dialog id="mcp-dialog" class="dialog compact">
-      <div class="dialog-header"><div><h2>MCP 连接</h2><p id="mcp-dialog-status"></p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
+      <div class="dialog-header"><div><h2>MCP 设置</h2><p id="mcp-dialog-status"></p></div><button class="icon-button" data-close aria-label="关闭"><i data-icon="x"></i></button></div>
       <div class="dialog-fields">
         <label>Streamable HTTP 地址<input id="mcp-address" readonly /></label>
+        <form id="mcp-port-form" class="mcp-port-form" hidden>
+          <label>本机端口<input id="mcp-port" type="number" min="1" max="65535" step="1" required /></label>
+          <button id="mcp-apply-port" class="button subtle" type="submit">应用端口</button>
+        </form>
+        <label>访问权限<select id="mcp-access" aria-describedby="mcp-access-note" disabled>
+          <option value="disabled">不允许</option><option value="read_only">只读</option><option value="read_write">读写</option>
+        </select></label>
+        <p class="mcp-setting-note" id="mcp-access-note"></p>
         <div class="mcp-permission">
           <label><input id="mcp-allow-pack-import" type="checkbox" aria-describedby="mcp-pack-import-note" disabled />允许 MCP 导入资源包</label>
-          <p id="mcp-pack-import-note">允许本机 MCP 客户端向全局资源库添加资源包。重新打开编辑器后恢复关闭。</p>
+          <p id="mcp-pack-import-note">读写模式下可临时授权添加全局资源包。重新打开编辑器后恢复关闭。</p>
         </div>
+        <p id="mcp-settings-result" class="mcp-setting-note" role="status" hidden></p>
       </div>
       <div class="dialog-actions"><button class="button primary" id="copy-mcp"><i data-icon="copy"></i>复制地址</button></div>
-    </dialog>
-
-    <dialog id="drop-structure-dialog" class="dialog compact" aria-labelledby="drop-structure-title">
-      <form method="dialog">
-        <div class="dialog-header"><h2 id="drop-structure-title">选择要打开的建筑</h2></div>
-        <div class="dialog-fields"><label>结构文件<select id="drop-structure-file"></select></label></div>
-        <div class="dialog-actions">
-          <button class="button quiet" type="submit" value="cancel" autofocus>取消</button>
-          <button class="button primary" type="submit" value="open">打开</button>
-        </div>
-      </form>
     </dialog>
 
     <dialog id="help-dialog" class="dialog compact">

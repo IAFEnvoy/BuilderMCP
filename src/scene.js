@@ -103,7 +103,7 @@ function projectMetadata(name, dataVersion) {
 }
 
 export class BuildScene {
-  #clipboard = null;
+  #clipboard;
   blocks = new Map();
   selection = new Set();
   listeners = new Set();
@@ -112,7 +112,8 @@ export class BuildScene {
   revision = 0;
   lastRevision = 0;
 
-  constructor(project) {
+  constructor(project, clipboard = { selection: null }) {
+    this.#clipboard = clipboard;
     this.load(project);
   }
 
@@ -149,7 +150,7 @@ export class BuildScene {
 
   get bounds() { return boundsOf(this.blocks.values()); }
   get selected() { return [...this.selection].map(key => this.blocks.get(key)).filter(Boolean); }
-  get clipboardSize() { return this.#clipboard?.size.slice() ?? null; }
+  get clipboardSize() { return this.#clipboard.selection?.size.slice() ?? null; }
 
   select(keys) {
     this.selection = new Set([...keys].filter(key => this.blocks.has(key)));
@@ -171,13 +172,14 @@ export class BuildScene {
 
     const blocks = structuredClone(selected);
     for (const block of blocks) block.pos = block.pos.map((n, axis) => n - bounds.min[axis]);
-    this.#clipboard = { blocks, size: bounds.size };
+    this.#clipboard.selection = { blocks, size: bounds.size };
     return { count: blocks.length, size: this.clipboardSize };
   }
 
   pasteSelection(origin) {
-    if (!this.#clipboard) throw new Error('请先复制选区。');
-    const { blocks, size } = this.#clipboard;
+    const selection = this.#clipboard.selection;
+    if (!selection) throw new Error('请先复制选区。');
+    const { blocks, size } = selection;
     const target = point(origin, '粘贴原点');
     point(target.map((n, axis) => n + size[axis] - 1), '粘贴末端');
 

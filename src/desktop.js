@@ -60,20 +60,19 @@ export async function readBrowserStructureFile(file) {
   return { path: null, format, project };
 }
 
-export async function openProject() {
+export async function chooseStructureFiles() {
   if (desktop) {
-    const path = await open({ filters: [{ name: 'Minecraft 结构文件', extensions: STRUCTURE_FORMATS }] });
-    return path ? readStructureFile(path) : null;
+    return (await open({ multiple: true, filters: [{ name: 'Minecraft 结构文件', extensions: STRUCTURE_FORMATS }] })) ?? [];
   }
-  const file = await new Promise(resolve => {
+  return new Promise(resolve => {
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;
     input.accept = STRUCTURE_FORMATS.map(extension => '.' + extension).join(',');
-    input.addEventListener('change', () => resolve(input.files[0]));
-    input.addEventListener('cancel', () => resolve(null));
+    input.addEventListener('change', () => resolve([...input.files]));
+    input.addEventListener('cancel', () => resolve([]));
     input.click();
   });
-  return file ? readBrowserStructureFile(file) : null;
 }
 
 function chooseSavePath(name, extension) {
@@ -111,11 +110,12 @@ export function saveReplayFile(buffer, path, overwrite) {
   return invoke('save_replay_file', { path, overwrite, data: encodeBase64(new Uint8Array(buffer)) });
 }
 
-export async function saveStructureAs(project, name, format) {
+export async function saveStructureAs(project, name, format, checkPath) {
   if (desktop) {
     const path = await chooseSavePath(name, format);
     if (!path) return null;
     if (structureFileInfo(path).format !== format) throw new Error('文件扩展名需要与保存格式一致。');
+    checkPath?.(path);
     return saveStructureFile(project, path, format, true);
   }
   const { encodeStructure } = await import('./structure.js');
@@ -161,6 +161,8 @@ export async function connectMcp(dispatch) {
   });
   return invoke('mcp_ready');
 }
+
+export const configureMcp = update => invoke('configure_mcp', { update });
 
 export function encodeBase64(bytes) {
   if (typeof bytes.toBase64 === 'function') return bytes.toBase64();

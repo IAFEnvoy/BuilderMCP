@@ -34,7 +34,7 @@
   },
   "tools": [
     {
-      "name": "get_scene", "description": "Read the current project name, file path and format, whether it has unsaved edits, the Minecraft Java release if known, DataVersion, bounds, block and selection counts, camera, and globally installed resource packs.",
+      "name": "get_scene", "description": "Read the active project, open project tabs, unsaved status, Minecraft Java release and DataVersion, bounds, block and selection counts, camera, and globally installed resource packs.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false }
     },
@@ -49,11 +49,12 @@
       } }
     },
     {
-      "name": "open_project", "description": "Open a Java .nbt structure, .litematic schematic or Bedrock .mcstructure file as the active project without showing a file picker. Returns the file path, format, Java export version and DataVersion, and block count.",
+      "name": "open_project", "description": "Open one structure as the active project using path, or open structures in separate tabs using paths. A path that is already open activates that tab. Batch mode returns projects, failed files with errors, and the active project. Supports .nbt, .litematic and desktop .mcstructure.",
       "annotations": { "destructiveHint": true, "openWorldHint": false },
-      "inputSchema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": {
+      "inputSchema": { "type": "object", "oneOf": [{ "required": ["path"] }, { "required": ["paths"] }], "additionalProperties": false, "properties": {
         "path": { "type": "string", "minLength": 1, "description": "Absolute file path on the machine running Builder MCP." },
-        "discard_unsaved": { "$ref": "#/$defs/discard" }
+        "paths": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "minLength": 1 }, "description": "Absolute structure paths to open in tabs. The first successful file becomes active." },
+        "discard_unsaved": { "$ref": "#/$defs/discard", "description": "Applies when replacing the active project in single-path mode. Set true to reload its file from disk if the path is already active." }
       } }
     },
     {

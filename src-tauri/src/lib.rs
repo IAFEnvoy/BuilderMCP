@@ -71,7 +71,7 @@ pub fn run() {
                 app.path().home_dir().ok(),
                 app.path().data_dir().ok(),
             ));
-            app.manage(mcp::start(app.handle().clone()));
+            app.manage(mcp::start(app.handle().clone(), data.join("mcp.json")));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +87,7 @@ pub fn run() {
             documents::save_structure_file,
             documents::save_replay_file,
             mcp::mcp_ready,
+            mcp::configure_mcp,
             mcp::mcp_reply
         ])
         .run(tauri::generate_context!())

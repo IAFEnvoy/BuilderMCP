@@ -10,7 +10,7 @@ import Sortable from 'sortablejs';
 import './styles.css';
 import { blockEntityKind, defaultJigsaw, DYE_COLORS, MAX_BANNER_LAYERS } from './block-entities.js';
 import {
-  connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, openProject, PACK_ARCHIVE_FORMATS,
+  chooseStructureFiles, configureMcp, connectMcp, decodeBase64, desktop, fileInfo, minecraftTranslations, PACK_ARCHIVE_FORMATS,
   packsOnDisk, readBrowserStructureFile, readStructureFile, safeFilename, saveFile, saveReplayFile, saveStructureAs, saveStructureFile, structureFileInfo, STRUCTURE_FORMATS,
 } from './desktop.js';
 import { editorMcp } from './editor-mcp.js';
@@ -47,6 +47,7 @@ const compassEndpoints = new Map([...document.querySelectorAll('[data-axis-view]
 const brushTools = new Set(['place', 'replace', 'fill']);
 const PALETTE_PAGE_SIZE = 120;
 const FAVORITES_KEY = 'buildermcp.blockFavorites';
+const MCP_ACCESS_KEY = 'buildermcp.mcpAccess';
 const REPLAY_STEP_MS = 200;
 const modelPreview = new ModelPreview();
 const icons = {
@@ -76,7 +77,11 @@ for (const element of document.querySelectorAll('[data-desktop-format]')) {
   element.disabled = !desktop;
 }
 
-const build = new BuildScene(emptyProject());
+const projectClipboard = { selection: null };
+let activeProject = createProjectTab(emptyProject(), null, true);
+const projectTabs = [activeProject];
+let build = activeProject.scene;
+let unobserveScene;
 let locale = normalizeLocale(localStorage.getItem(LOCALE_KEY)) ?? DEFAULT_LOCALE;
 let catalog = new BlockCatalog([], locale);
 let officialVersion = null;
@@ -92,8 +97,6 @@ let favoritesOnly = false;
 let favoriteBlocks = readBlockFavorites();
 let firstCorner = null;
 let focusPreset = DEFAULT_CAMERA_PRESET;
-let currentFile = null;
-let savedRevision = build.revision;
 let paletteLimit = PALETTE_PAGE_SIZE;
 let paletteCatalog;
 let packs = new Map();
@@ -108,6 +111,14 @@ const replayExports = new Map();
 let mcp = { url: '', error: desktop ? '' : '请使用桌面应用启动 MCP 服务。' };
 let viewport;
 let toastTimer;
+const mcpAccessNotes = {
+  disabled: '拒绝所有 MCP 工具调用。',
+  read_only: '可查看项目、方块、截图、模型预览和回放导出进度。',
+  read_write: '可编辑场景、操作视图并打开、保存或导出文件。',
+};
+const storedMcpAccess = localStorage.getItem(MCP_ACCESS_KEY);
+let mcpAccess = Object.hasOwn(mcpAccessNotes, storedMcpAccess) ? storedMcpAccess : 'read_write';
+let mcpSettingsBusy = false;
 let allowMcpPackImport = false;
 
 const tools = {
@@ -149,8 +160,8 @@ function onClick(id, action) {
   });
 }
 
-function isProjectDirty() {
-  return build.revision !== savedRevision;
+function isProjectDirty(project = activeProject) {
+  return project.scene.revision !== project.savedRevision;
 }
 
 function requireSavedProject(discardUnsaved = false) {
@@ -627,15 +638,13 @@ entityForm.addEventListener('submit', event => {
 
 function updateScene(change = {}) {
   if (!change.selection) {
-    byId('project-name').textContent = build.name;
-    byId('project-name').title = build.name;
-    byId('project-dirty').hidden = !isProjectDirty();
+    updateProjectTab(activeProject);
     byId('undo').disabled = !build.history.length;
     byId('redo').disabled = !build.future.length;
     byId('scene-count').textContent = build.blocks.size.toLocaleString();
     byId('scene-bounds').textContent = build.bounds?.size.join(' × ') ?? '—';
     byId('minecraft-version').textContent = minecraftVersionFor(build.dataVersion) ?? '未知版本';
-    byId('edition').textContent = currentFile?.format === 'mcstructure' ? 'Minecraft Bedrock' : 'Minecraft Java';
+    byId('edition').textContent = activeProject.file?.format === 'mcstructure' ? 'Minecraft Bedrock' : 'Minecraft Java';
     byId('select-all').disabled = !build.blocks.size;
     byId('export-image').disabled = !viewport || !build.blocks.size;
   }
@@ -985,10 +994,10 @@ async function projectAction(action) {
   finally { projectBusy = false; }
 }
 
-function chooseUnsavedAction(operation) {
+function chooseUnsavedAction(operation, project) {
   setSaveMenu(false);
-  byId('unsaved-message').textContent = `在${operation}前保存「${build.name}」的修改？`;
-  byId('unsaved-format-field').hidden = Boolean(currentFile?.format);
+  byId('unsaved-message').textContent = `在${operation}前保存「${project.scene.name}」的修改？`;
+  byId('unsaved-format-field').hidden = Boolean(project.file?.format);
   byId('unsaved-format').value = 'litematic';
   unsavedDialog.returnValue = 'cancel';
   unsavedDialog.showModal();
@@ -997,24 +1006,20 @@ function chooseUnsavedAction(operation) {
   });
 }
 
-function leaveProject(operation, proceed) {
-  return projectAction(async () => {
-    if (isProjectDirty()) {
-      const choice = await chooseUnsavedAction(operation);
-      if (choice === 'save') {
-        const selectedFormat = currentFile?.format ? undefined : byId('unsaved-format').value;
-        if (!await saveCurrentProject(selectedFormat)) return;
-        if (isProjectDirty()) throw new Error('保存期间又有修改，请再保存一次。');
-      } else if (choice !== 'discard') return;
-    }
-    return proceed(build.revision);
-  });
+async function confirmProjectClose(operation, project) {
+  if (!isProjectDirty(project)) return true;
+  const choice = await chooseUnsavedAction(operation, project);
+  if (choice !== 'save') return choice === 'discard';
+  const format = project.file?.format ? undefined : byId('unsaved-format').value;
+  if (!await saveCurrentProject(format, project)) return false;
+  if (isProjectDirty(project)) throw new Error('保存期间又有修改，请再保存一次。');
+  return true;
 }
 
 async function guardWindowClose() {
   if (!desktop) {
     window.addEventListener('beforeunload', event => {
-      if (!isProjectDirty()) return;
+      if (!projectTabs.some(isProjectDirty)) return;
       event.preventDefault();
       event.returnValue = true;
     });
@@ -1024,78 +1029,250 @@ async function guardWindowClose() {
   await appWindow.onCloseRequested(async event => {
     event.preventDefault();
     if (projectBusy) return;
-    try { await leaveProject('关闭窗口', () => appWindow.destroy()); }
-    catch (error) { handleError(error); }
+    try {
+      await projectAction(async () => {
+        const checked = new Map();
+        for (const project of projectTabs) {
+          if (!await confirmProjectClose('关闭窗口', project)) return;
+          checked.set(project, project.scene.revision);
+        }
+        if (projectTabs.some(project => checked.get(project) !== project.scene.revision)) {
+          throw new Error('确认关闭期间有新的修改，请重新关闭窗口。');
+        }
+        await appWindow.destroy();
+      });
+    } catch (error) { handleError(error); }
   });
 }
 
-function projectInfo() {
+function projectInfo(project = activeProject) {
+  const { scene, file } = project;
   return {
-    name: build.name, minecraftVersion: minecraftVersionFor(build.dataVersion),
-    dataVersion: build.dataVersion, blockCount: build.blocks.size,
-    path: currentFile?.path ?? null, format: currentFile?.format ?? null,
-    dirty: isProjectDirty(),
+    name: scene.name, minecraftVersion: minecraftVersionFor(scene.dataVersion),
+    dataVersion: scene.dataVersion, blockCount: scene.blocks.size,
+    path: file?.path ?? null, format: file?.format ?? null, dirty: isProjectDirty(project),
   };
 }
 
-function setProject(project, file = null) {
-  build.load(project);
-  if (tool === 'paste') toggleTool('select');
-  currentFile = file;
-  savedRevision = build.revision;
-  firstCorner = null;
-  setSaveMenu(false);
-  frame(viewport?.projection === 'orthographic' ? 'isometric' : DEFAULT_CAMERA_PRESET);
-  updateScene();
+function createProjectTab(project, file = null, placeholder = false) {
+  const scene = new BuildScene(project, projectClipboard);
+  return { scene, file, placeholder, savedRevision: scene.revision };
 }
 
-function newProject(name, dataVersion = build.dataVersion) {
+function filePathKey(path) {
+  return /^(?:[a-z]:[\\/]|\\\\)/i.test(path) ? path.replaceAll('\\', '/').toLowerCase() : path;
+}
+
+function findOpenProject(path, projects = projectTabs) {
+  if (!path) return null;
+  const key = filePathKey(path);
+  return projects.find(project => project.file?.path && filePathKey(project.file.path) === key);
+}
+
+function updateProjectTab(project) {
+  const { name, path, dirty } = projectInfo(project);
+  const { select, label, dot, close } = project.controls;
+  const title = path ? fileInfo(path).filename : name;
+  label.textContent = title;
+  select.title = path ? `${name}\n${path}` : name;
+  dot.hidden = !dirty;
+  close.setAttribute('aria-label', `关闭 ${title}`);
+}
+
+function renderProjectTabs() {
+  const tabs = byId('project-tabs');
+  const items = projectTabs.map(project => {
+    const item = document.createElement('div');
+    item.className = 'project-tab';
+    const select = document.createElement('button');
+    select.className = 'project-tab-select';
+    if (project === activeProject) select.setAttribute('aria-current', 'page');
+    select.addEventListener('click', () => {
+      if (projectBusy || project === activeProject) return;
+      activateProject(project);
+      project.controls.select.focus({ preventScroll: true });
+    });
+    const label = document.createElement('span');
+    label.className = 'project-tab-name';
+    const dot = document.createElement('span');
+    dot.className = 'dirty-dot';
+    dot.title = '有未保存的修改';
+    if (project === activeProject) { label.id = 'project-name'; dot.id = 'project-dirty'; }
+    select.append(icon('file-box'), label, dot);
+    const close = document.createElement('button');
+    close.className = 'icon-button small project-tab-close';
+    close.title = '关闭项目';
+    close.append(icon('x'));
+    close.addEventListener('click', () => closeProjectTab(project).catch(handleError));
+    item.append(select, close);
+    project.controls = { select, label, dot, close };
+    updateProjectTab(project);
+    return item;
+  });
+  tabs.replaceChildren(...items);
+  activeProject.controls.select.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function observeScene() {
+  unobserveScene?.();
+  unobserveScene = build.onChange(change => {
+    recordSceneChange(change);
+    updateScene(change);
+  });
+}
+
+function activateProject(project) {
+  if (project === activeProject) return;
+  cancelReplayExport('切换项目已取消回放导出');
+  stopPlayback();
+  activeProject.recording = recording;
+  activeProject.lastRecording = lastRecording;
+  activeProject.view = viewport && { camera: viewport.cameraInfo(), layer: viewport.layer, focusPreset };
+  activeProject = project;
+  build = project.scene;
+  recording = project.recording ?? null;
+  lastRecording = project.lastRecording ?? null;
+  viewport?.setBuild(build);
+  observeScene();
+  brushPopover.hidePopover();
+  byId('project-dialog').close();
+  setSaveMenu(false);
+  firstCorner = null;
+  if (tool === 'paste') toggleTool('select');
+  const layer = project.view?.layer ?? 0;
+  viewport?.setLayer(layer);
+  byId('work-layer').value = layer;
+  if (project.view) {
+    viewport?.restoreCamera(project.view.camera);
+    focusPreset = project.view.focusPreset;
+    updateProjectionButtons();
+  } else frame(viewport?.projection === 'orthographic' ? 'isometric' : DEFAULT_CAMERA_PRESET);
+  renderProjectTabs();
+  updateScene();
+  updateReplayControls();
+  status(tools[tool]);
+}
+
+function replacePlaceholder() {
+  const { placeholder, scene, file } = activeProject;
+  return projectTabs.length === 1 && placeholder && !file && scene.lastRevision === 1;
+}
+
+function appendProject(project, replace = false) {
+  if (replace || replacePlaceholder()) projectTabs.splice(projectTabs.indexOf(activeProject), 1, project);
+  else projectTabs.push(project);
+  activateProject(project);
+}
+
+function closeProjectTab(project) {
+  return projectAction(async () => {
+    if (!await confirmProjectClose('关闭项目', project)) return;
+    const index = projectTabs.indexOf(project);
+    projectTabs.splice(index, 1);
+    if (project === activeProject) {
+      if (!projectTabs.length) projectTabs.push(createProjectTab(emptyProject(build.dataVersion), null, true));
+      activateProject(projectTabs[Math.min(index, projectTabs.length - 1)]);
+    } else renderProjectTabs();
+  });
+}
+
+function newProject(name, dataVersion = build.dataVersion, replace = false) {
   const project = emptyProject(dataVersion);
   if (name !== undefined) project.name = name;
-  setProject(project);
+  appendProject(createProjectTab(project), replace);
   status('已新建项目');
   return projectInfo();
 }
 
-function showOpenedProject(project, { path, format }) {
-  setProject(project, { path, format });
-  status('已打开 .' + format + ' · ' + build.blocks.size.toLocaleString() + ' 个方块');
-  return projectInfo();
+async function openProjectTabs(sources) {
+  const opened = new Set();
+  const added = [];
+  const failed = [];
+  for (const source of sources) {
+    const path = typeof source === 'string' ? source : null;
+    try {
+      const existing = findOpenProject(path) ?? findOpenProject(path, added);
+      if (existing) { opened.add(existing); continue; }
+      const file = await (path ? readStructureFile(path) : readBrowserStructureFile(source));
+      const project = createProjectTab(file.project, { path: file.path, format: file.format });
+      added.push(project);
+      opened.add(project);
+    } catch (error) {
+      failed.push({ file: path ?? source.name, error: errorMessage(error) });
+    }
+  }
+  if (opened.size) {
+    if (replacePlaceholder()) projectTabs.pop();
+    for (const project of added) projectTabs.push(project);
+    const first = opened.values().next().value;
+    if (first === activeProject) renderProjectTabs();
+    else activateProject(first);
+    status(`已打开 ${opened.size} 个项目${failed.length ? ` · ${failed.length} 个失败` : ''}`);
+  }
+  return { projects: [...opened].map(projectInfo), failed, active: projectInfo() };
 }
 
-function openEditorProject(read) {
-  return leaveProject('打开文件', async revision => {
-    const file = await read();
-    if (!file) return;
-    if (build.revision !== revision && isProjectDirty()) throw new Error('打开文件期间项目有新的修改，请重新打开文件。');
-    return showOpenedProject(file.project, file);
+function openEditorProjects(choose) {
+  return projectAction(async () => {
+    const result = await openProjectTabs(await choose());
+    if (result.failed.length) handleError(result.failed.map(({ file, error }) => `${fileInfo(file).filename} · ${error}`).join('\n'));
+    return result.projects.length;
   });
 }
 
-async function writeProject(write) {
-  const revision = build.revision;
-  const snapshot = build.snapshot();
+function openMcpProject({ path, paths, discard_unsaved }) {
+  return projectAction(async () => {
+    if (paths !== undefined) {
+      if (path !== undefined || !Array.isArray(paths) || !paths.length || paths.length > 32 ||
+        paths.some(file => typeof file !== 'string' || !file.trim())) throw new Error('Provide 1–32 file paths in paths, or one path.');
+      return openProjectTabs(paths);
+    }
+    structureFileInfo(path);
+    if (discard_unsaved !== undefined && typeof discard_unsaved !== 'boolean') throw new Error('discard_unsaved must be a boolean.');
+    const existing = findOpenProject(path);
+    if (existing && (existing !== activeProject || !discard_unsaved)) {
+      activateProject(existing);
+      return projectInfo();
+    }
+    requireSavedProject(discard_unsaved);
+    const file = await readStructureFile(path);
+    requireSavedProject(discard_unsaved);
+    appendProject(createProjectTab(file.project, { path: file.path, format: file.format }), true);
+    status('已打开 .' + file.format + ' · ' + build.blocks.size.toLocaleString() + ' 个方块');
+    return projectInfo();
+  });
+}
+
+function requireUnusedSavePath(path, project) {
+  const owner = findOpenProject(path);
+  if (owner && owner !== project) throw new Error('目标文件已经在另一个项目标签中打开。');
+}
+
+async function writeProject(project, write) {
+  const revision = project.scene.revision;
+  const snapshot = project.scene.snapshot();
   const saved = await write(snapshot);
   if (!saved) return null;
   const { path, format } = saved;
-  currentFile = { path: desktop ? path : null, format };
-  savedRevision = revision;
-  updateScene();
+  project.file = { path: desktop ? path : null, format };
+  project.savedRevision = revision;
+  if (project === activeProject) updateScene();
+  else updateProjectTab(project);
   toast('已保存 .' + format);
   return { ...saved, blockCount: snapshot.blocks.length };
 }
 
-async function saveCurrentProject(asFormat) {
-  const format = asFormat ?? currentFile?.format;
+async function saveCurrentProject(asFormat, project = activeProject) {
+  const format = asFormat ?? project.file?.format;
   if (!format) {
     setSaveMenu(true);
     return null;
   }
   setSaveMenu(false);
-  const path = asFormat ? null : currentFile.path;
-  return writeProject(project => path
-    ? saveStructureFile(project, path, format, true)
-    : saveStructureAs(project, safeFilename(project.name), format));
+  const path = asFormat ? null : project.file.path;
+  return writeProject(project, snapshot => path
+    ? saveStructureFile(snapshot, path, format, true)
+    : saveStructureAs(snapshot, safeFilename(snapshot.name), format, target => requireUnusedSavePath(target, project)));
 }
 
 function saveProject(asFormat) {
@@ -1104,17 +1281,19 @@ function saveProject(asFormat) {
 
 function saveMcpProject({ path, format, overwrite }) {
   return projectAction(() => {
+    const { file } = activeProject;
     const explicitFile = path === undefined ? null : structureFileInfo(path);
     if (format !== undefined && !STRUCTURE_FORMATS.includes(format)) throw new Error(`Choose a format from ${STRUCTURE_FORMATS.join(', ')}.`);
     if (overwrite !== undefined && typeof overwrite !== 'boolean') throw new Error('overwrite must be a boolean.');
-    const selectedFormat = format ?? explicitFile?.format ?? currentFile?.format ?? 'litematic';
+    const selectedFormat = format ?? explicitFile?.format ?? file?.format ?? 'litematic';
     if (explicitFile && explicitFile.format !== selectedFormat) {
       throw new Error('The file extension must match the selected structure format.');
     }
-    const currentPath = currentFile?.format === selectedFormat ? currentFile.path : null;
+    const currentPath = file?.format === selectedFormat ? file.path : null;
     const target = path ?? currentPath;
     const replace = overwrite ?? (path === undefined && Boolean(target));
-    return writeProject(project => saveStructureFile(project, target, selectedFormat, replace));
+    requireUnusedSavePath(target, activeProject);
+    return writeProject(activeProject, project => saveStructureFile(project, target, selectedFormat, replace));
   });
 }
 
@@ -1450,7 +1629,7 @@ async function importPacks(paths) {
 }
 
 function requireMcpPackImport() {
-  if (!allowMcpPackImport) {
+  if (mcpAccess !== 'read_write' || !allowMcpPackImport) {
     throw new Error('Resource pack import is disabled. Enable it in the editor’s MCP settings.');
   }
 }
@@ -1499,44 +1678,20 @@ function projectSettings() {
   byId('project-dialog').showModal();
 }
 
-function chooseDroppedStructure(structures) {
-  if (structures.length === 1) return structures[0];
-  const dialog = byId('drop-structure-dialog');
-  const select = byId('drop-structure-file');
-  select.replaceChildren(...structures.map(({ file, filename }, index) => {
-    const repeated = structures.some((other, i) => i !== index && other.filename === filename);
-    return new Option(repeated && desktop ? file : filename);
-  }));
-  dialog.returnValue = 'cancel';
-  dialog.showModal();
-  return new Promise(resolve => {
-    dialog.addEventListener('close', () => {
-      resolve(dialog.returnValue === 'open' ? structures[select.selectedIndex] : null);
-    }, { once: true });
-  });
-}
-
 async function openDroppedFiles(files) {
   const archives = [];
   const structures = [];
   const unsupported = [];
   for (const file of files) {
     const { filename, extension } = fileInfo(desktop ? file : file.name);
-    if (STRUCTURE_FORMATS.includes(extension)) structures.push({ file, filename });
+    if (STRUCTURE_FORMATS.includes(extension)) structures.push(file);
     else if (desktop && PACK_ARCHIVE_FORMATS.includes(extension)) archives.push(file);
     else unsupported.push(filename);
   }
   if (archives.length) await packAction(() => importPacks(archives));
-  if (structures.length) {
-    if (projectBusy) throw new Error('另一个项目文件操作正在进行。');
-    const chosen = await chooseDroppedStructure(structures);
-    if (chosen) {
-      const read = desktop ? readStructureFile : readBrowserStructureFile;
-      if (await openEditorProject(() => read(chosen.file))) {
-        byId('pack-dialog').close();
-        byId('project-dialog').close();
-      }
-    }
+  if (structures.length && await openEditorProjects(() => structures)) {
+    byId('pack-dialog').close();
+    byId('project-dialog').close();
   }
   if (unsupported.length) {
     const formats = desktop ? '支持 ZIP、JAR、NBT、Litematic 和 MCStructure。' : '桌面应用可打开 MCStructure 和导入资源包。';
@@ -1682,8 +1837,8 @@ byId('project-form').addEventListener('submit', event => {
   } catch (error) { handleError(error); }
 });
 
-onClick('project-new', () => leaveProject('新建项目', () => newProject()));
-onClick('project-open', () => openEditorProject(openProject));
+onClick('project-new', () => projectAction(() => newProject()));
+onClick('project-open', () => openEditorProjects(chooseStructureFiles));
 onClick('project-save', () => saveProject());
 onClick('project-settings', projectSettings);
 onClick('scene-settings', projectSettings);
@@ -1715,30 +1870,85 @@ for (const button of packImportButtons) {
 }
 onClick('help', () => byId('help-dialog').showModal());
 
-function renderMcp() {
+function renderMcp(resetPort = false) {
   const online = Boolean(mcp.url && !mcp.error);
   const element = byId('mcp-status');
-  element.classList.toggle('online', online);
+  element.classList.toggle('online', online && mcpAccess !== 'disabled');
   element.classList.toggle('offline', Boolean(mcp.error));
-  const description = online ? 'MCP 服务正在监听本机连接。' : mcp.error || '正在启动 MCP 服务…';
+  const description = mcp.error || (online ? 'MCP 服务正在监听本机连接。' : '正在启动 MCP 服务…');
   element.title = description;
   byId('mcp-dialog-status').textContent = description;
   byId('mcp-address').value = mcp.url;
-  byId('copy-mcp').disabled = !mcp.url;
+  byId('copy-mcp').disabled = !online;
+  const port = byId('mcp-port');
+  byId('mcp-port-form').hidden = !desktop;
+  if (resetPort) port.value = mcp.port ?? '';
+  port.disabled = byId('mcp-apply-port').disabled = !mcp.port || mcpSettingsBusy;
+  const access = byId('mcp-access');
+  access.value = mcpAccess;
+  access.disabled = !mcp.url || mcpSettingsBusy;
+  byId('mcp-access-note').textContent = mcpAccessNotes[mcpAccess];
   const permission = byId('mcp-allow-pack-import');
   permission.checked = allowMcpPackImport;
-  permission.disabled = !online;
+  permission.disabled = !online || mcpAccess !== 'read_write' || mcpSettingsBusy;
 }
 
-byId('mcp-allow-pack-import').addEventListener('click', event => {
-  if (!event.isTrusted) {
-    event.preventDefault();
-    return;
+function receiveMcpStatus(current) {
+  mcp = current;
+  mcpAccess = current.access ?? mcpAccess;
+  allowMcpPackImport = current.allowPackImport ?? allowMcpPackImport;
+}
+
+async function applyMcpSettings(update) {
+  if (mcpSettingsBusy) return;
+  const feedback = byId('mcp-settings-result');
+  const previousPort = mcp.port;
+  mcpSettingsBusy = true;
+  feedback.hidden = true;
+  renderMcp();
+  try {
+    if (desktop) receiveMcpStatus(await configureMcp(update));
+    else {
+      if (update.access !== undefined) {
+        localStorage.setItem(MCP_ACCESS_KEY, update.access);
+        mcpAccess = update.access;
+      }
+      allowMcpPackImport = mcpAccess === 'read_write' && (update.allowPackImport ?? allowMcpPackImport);
+    }
+    if (update.port !== undefined) {
+      byId('mcp-port').value = mcp.port;
+      feedback.textContent = previousPort === mcp.port ? '端口已应用。' : '端口已切换，请用新地址重新连接 MCP 客户端。';
+      feedback.classList.remove('error');
+      feedback.hidden = false;
+    }
+  } catch (error) {
+    feedback.textContent = errorMessage(error);
+    feedback.classList.add('error');
+    feedback.hidden = false;
+  } finally {
+    mcpSettingsBusy = false;
+    renderMcp();
   }
-  allowMcpPackImport = event.currentTarget.checked;
+}
+
+byId('mcp-port-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (event.isTrusted) void applyMcpSettings({ port: byId('mcp-port').valueAsNumber });
+});
+byId('mcp-access').addEventListener('change', event => {
+  if (event.isTrusted) void applyMcpSettings({ access: event.target.value });
+  else renderMcp();
+});
+byId('mcp-allow-pack-import').addEventListener('change', event => {
+  if (event.isTrusted) void applyMcpSettings({ allowPackImport: event.target.checked });
+  else renderMcp();
 });
 
-onClick('mcp-status', () => { renderMcp(); byId('mcp-dialog').showModal(); });
+onClick('mcp-status', () => {
+  byId('mcp-settings-result').hidden = true;
+  renderMcp(true);
+  byId('mcp-dialog').showModal();
+});
 onClick('copy-mcp', async () => {
   const input = byId('mcp-address');
   input.select();
@@ -1820,10 +2030,8 @@ try {
   for (const button of [...projectionButtons, ...presetButtons, ...compassEndpoints.values()]) button.disabled = true;
   console.error(error);
 }
-build.onChange(change => {
-  recordSceneChange(change);
-  updateScene(change);
-});
+observeScene();
+renderProjectTabs();
 updateReplayControls();
 updateScene();
 renderPalette();
@@ -1839,6 +2047,8 @@ if (desktop) {
   try {
     const editor = {
       projectInfo,
+      openProjects: () => projectTabs.map(project => ({ ...projectInfo(project), active: project === activeProject })),
+      access: () => mcpAccess,
       importResourcePack: importMcpResourcePack,
       applyHistory,
       copySelection,
@@ -1852,14 +2062,9 @@ if (desktop) {
         if (minecraft_version !== undefined && dataVersion === undefined) {
           throw new Error('Choose a supported Minecraft Java release, e.g. 1.21.1.');
         }
-        return newProject(name, dataVersion);
+        return newProject(name, dataVersion, true);
       }),
-      openProject: ({ path, discard_unsaved }) => projectAction(async () => {
-        requireSavedProject(discard_unsaved);
-        const file = await readStructureFile(path);
-        requireSavedProject(discard_unsaved);
-        return showOpenedProject(file.project, file);
-      }),
+      openProject: openMcpProject,
       saveProject: saveMcpProject,
       cameraInfo: () => viewport?.cameraInfo() ?? null,
       setCamera: (position, target, projection) => {
@@ -1888,8 +2093,8 @@ if (desktop) {
       catalog: () => catalog,
       status,
     };
-    mcp = await connectMcp(editorMcp(build, editor));
+    receiveMcpStatus(await connectMcp(editorMcp(() => build, editor)));
     if (mcp.error) mcp.error = `MCP 启动失败。${mcp.error}`;
   } catch (error) { mcp = { url: '', error: errorMessage(error) }; }
-  renderMcp();
+  renderMcp(true);
 }

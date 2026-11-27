@@ -201,9 +201,16 @@ export class Viewport {
     this.resize();
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(host);
-    build.onChange(change => this.sceneChanged(change));
-    this.rebuild();
+    this.setBuild(build);
     this.frame(DEFAULT_CAMERA_PRESET);
+  }
+
+  setBuild(build) {
+    this.unsubscribeBuild?.();
+    this.build = build;
+    this.unsubscribeBuild = build.onChange(change => this.sceneChanged(change));
+    this.hoverOutline.visible = false;
+    this.rebuild();
   }
 
   resize() {
@@ -660,6 +667,16 @@ export class Viewport {
       position: this.camera.position.toArray(), target: this.controls.target.toArray(), projection: this.projection,
       ...(this.camera.isOrthographicCamera ? { height: 2 / this.camera.zoom } : { fov: this.camera.fov }),
     };
+  }
+
+  restoreCamera({ position, target, projection, height }) {
+    this.setProjection(projection);
+    if (this.camera.isOrthographicCamera) this.camera.zoom = 2 / height;
+    this.camera.position.fromArray(position);
+    this.controls.target.fromArray(target);
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+    this.invalidate();
   }
 
   blockPreviewCamera(followCamera) {

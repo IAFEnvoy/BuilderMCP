@@ -9,11 +9,14 @@ use rmcp::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    fs,
     net::{Ipv4Addr, TcpListener},
+    num::NonZeroU16,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -27,17 +30,109 @@ use uuid::Uuid;
 const DEFAULT_PORT: u16 = 38741;
 type Reply = Result<Value, String>;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Access {
+    Disabled,
+    ReadOnly,
+    ReadWrite,
+}
+
+impl Access {
+    fn permits(self, tool: &Tool) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::ReadOnly => {
+                tool.annotations
+                    .as_ref()
+                    .and_then(|hints| hints.read_only_hint)
+                    == Some(true)
+            }
+            Self::ReadWrite => true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+struct Preferences {
+    port: NonZeroU16,
+    access: Access,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        let port = std::env::var("BUILDER_MCP_PORT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(NonZeroU16::new(DEFAULT_PORT).unwrap());
+        Self {
+            port,
+            access: Access::ReadWrite,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsUpdate {
+    port: Option<NonZeroU16>,
+    access: Option<Access>,
+    allow_pack_import: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpStatus {
     url: String,
     error: Option<String>,
+    port: NonZeroU16,
+    access: Access,
+    allow_pack_import: bool,
+}
+
+struct ListenerState {
+    preferences: Preferences,
+    allow_pack_import: bool,
+    stop: Option<oneshot::Sender<()>>,
+    generation: u64,
+    error: Option<String>,
+}
+
+impl ListenerState {
+    fn status(&self) -> McpStatus {
+        let Preferences { port, access } = self.preferences;
+        McpStatus {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            error: self.error.clone(),
+            port,
+            access,
+            allow_pack_import: self.allow_pack_import,
+        }
+    }
+
+    fn tool_error(&self, tool: &Tool) -> Option<&'static str> {
+        if !self.preferences.access.permits(tool) {
+            return Some(match self.preferences.access {
+                Access::Disabled => "MCP access is disabled in the editor’s settings.",
+                _ => "This tool requires read/write MCP access. The editor is in read-only mode.",
+            });
+        }
+        if tool.name == "import_resource_pack" && !self.allow_pack_import {
+            return Some(
+                "Resource pack import is disabled. Enable it in the editor’s MCP settings.",
+            );
+        }
+        None
+    }
 }
 
 pub struct Bridge {
     app: AppHandle,
     ready: AtomicBool,
     pending: Mutex<HashMap<Uuid, oneshot::Sender<Reply>>>,
-    status: Mutex<McpStatus>,
+    listener: Mutex<ListenerState>,
+    config: PathBuf,
+    tools: Vec<Tool>,
 }
 
 struct Pending<'a> {
@@ -90,17 +185,20 @@ impl Bridge {
 #[derive(Clone)]
 struct McpServer {
     bridge: Arc<Bridge>,
-    tools: Arc<Vec<Tool>>,
 }
 
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Use new_project or open_project to start working on a Minecraft structure, and save_project to save it as .nbt, .litematic, or Bedrock .mcstructure. Coordinates are integer [x, y, z] Minecraft cells. Use get_scene and search_palette for context, render_block_states for block previews, and capture_screenshot to inspect the live viewport. Block edits are undoable in the editor.")
+            .with_instructions("Use the available tools to inspect or edit the active Minecraft project. Coordinates are integer [x, y, z] Minecraft cells. Use get_scene and search_palette for context, render_block_states for block previews, and capture_screenshot to inspect the live viewport. Block edits are undoable in the editor.")
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.tools.iter().find(|tool| tool.name == name).cloned()
+        self.bridge
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .cloned()
     }
 
     async fn list_tools(
@@ -108,7 +206,15 @@ impl ServerHandler for McpServer {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(self.tools.as_ref().clone()))
+        let access = self.bridge.listener.lock().unwrap().preferences.access;
+        Ok(ListToolsResult::with_all_items(
+            self.bridge
+                .tools
+                .iter()
+                .filter(|tool| access.permits(tool))
+                .cloned()
+                .collect(),
+        ))
     }
 
     async fn call_tool(
@@ -117,11 +223,14 @@ impl ServerHandler for McpServer {
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.as_ref();
-        if self.get_tool(name).is_none() {
+        let Some(tool) = self.get_tool(name) else {
             return Err(ErrorData::invalid_params(
                 format!("Unknown tool: {name}"),
                 None,
             ));
+        };
+        if let Some(error) = self.bridge.listener.lock().unwrap().tool_error(&tool) {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(error)]).into());
         }
         let args = Value::Object(request.arguments.unwrap_or_default());
         let reply = self.bridge.request(name, args).await;
@@ -159,10 +268,10 @@ impl ServerHandler for McpServer {
     }
 }
 
-fn load_tools() -> Arc<Vec<Tool>> {
+fn load_tools() -> Vec<Tool> {
     let specification: Value =
         serde_json::from_str(include_str!("../../src/mcp-tools.json")).expect("MCP tool JSON");
-    let tools = specification["tools"]
+    specification["tools"]
         .as_array()
         .expect("MCP tool list")
         .iter()
@@ -171,54 +280,79 @@ fn load_tools() -> Arc<Vec<Tool>> {
             item["inputSchema"]["$defs"] = specification["$defs"].clone();
             serde_json::from_value(item).expect("MCP tool definition")
         })
-        .collect();
-    Arc::new(tools)
+        .collect()
 }
 
-pub fn start(app: AppHandle) -> Arc<Bridge> {
-    let port = std::env::var("BUILDER_MCP_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port > 0)
-        .unwrap_or(DEFAULT_PORT);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).and_then(|listener| {
-        listener.set_nonblocking(true)?;
-        Ok(listener)
+fn bind(port: NonZeroU16) -> Result<tokio::net::TcpListener, String> {
+    let runtime = tauri::async_runtime::handle();
+    let _guard = runtime.inner().enter();
+    TcpListener::bind((Ipv4Addr::LOCALHOST, port.get()))
+        .and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            tokio::net::TcpListener::from_std(listener)
+        })
+        .map_err(|error| format!("无法监听本机端口 {port}。{error}"))
+}
+
+fn serve(bridge: &Arc<Bridge>, state: &mut ListenerState, listener: tokio::net::TcpListener) {
+    let (stop, stopped) = oneshot::channel();
+    // Replacing the sender shuts down the previous listener after the new one has bound.
+    state.stop = Some(stop);
+    state.error = None;
+    state.generation += 1;
+    let generation = state.generation;
+    let bridge = bridge.clone();
+    tauri::async_runtime::spawn(async move {
+        let server = McpServer {
+            bridge: bridge.clone(),
+        };
+        let config = StreamableHttpServerConfig::default()
+            .enforce_origin_validation()
+            .with_json_response(true)
+            .with_max_request_body_bytes(8 * 1024 * 1024);
+        let service = StreamableHttpService::new(
+            move || Ok(server.clone()),
+            Arc::new(LocalSessionManager::default()),
+            config,
+        );
+        let result = axum::serve(listener, axum::Router::new().route_service("/mcp", service))
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await;
+        let mut state = bridge.listener.lock().unwrap();
+        if state.generation == generation {
+            state.stop = None;
+            state.error = result.err().map(|error| error.to_string());
+        }
     });
+}
+
+pub fn start(app: AppHandle, config: PathBuf) -> Arc<Bridge> {
+    let preferences: Preferences = fs::File::open(&config)
+        .ok()
+        .and_then(|file| serde_json::from_reader(file).ok())
+        .unwrap_or_default();
     let bridge = Arc::new(Bridge {
         app,
         ready: AtomicBool::new(false),
         pending: Mutex::new(HashMap::new()),
-        status: Mutex::new(McpStatus {
-            url: format!("http://127.0.0.1:{port}/mcp"),
-            error: listener.as_ref().err().map(ToString::to_string),
+        listener: Mutex::new(ListenerState {
+            preferences,
+            allow_pack_import: false,
+            stop: None,
+            generation: 0,
+            error: None,
         }),
+        config,
+        tools: load_tools(),
     });
-    if let Ok(listener) = listener {
-        let server = McpServer {
-            bridge: bridge.clone(),
-            tools: load_tools(),
-        };
-        let status = bridge.clone();
-        tauri::async_runtime::spawn(async move {
-            let result = async {
-                let listener = tokio::net::TcpListener::from_std(listener)?;
-                let config = StreamableHttpServerConfig::default()
-                    .enforce_origin_validation()
-                    .with_json_response(true)
-                    .with_max_request_body_bytes(8 * 1024 * 1024);
-                let service = StreamableHttpService::new(
-                    move || Ok(server.clone()),
-                    Arc::new(LocalSessionManager::default()),
-                    config,
-                );
-                axum::serve(listener, axum::Router::new().route_service("/mcp", service)).await
-            }
-            .await;
-            if let Err(error) = result {
-                status.status.lock().unwrap().error = Some(error.to_string());
-            }
-        });
+    {
+        let mut state = bridge.listener.lock().unwrap();
+        match bind(preferences.port) {
+            Ok(listener) => serve(&bridge, &mut state, listener),
+            Err(error) => state.error = Some(error),
+        }
     }
     bridge
 }
@@ -226,7 +360,41 @@ pub fn start(app: AppHandle) -> Arc<Bridge> {
 #[tauri::command]
 pub fn mcp_ready(state: State<'_, Arc<Bridge>>) -> McpStatus {
     state.ready.store(true, Ordering::Release);
-    state.status.lock().unwrap().clone()
+    state.listener.lock().unwrap().status()
+}
+
+#[tauri::command]
+pub async fn configure_mcp(
+    state: State<'_, Arc<Bridge>>,
+    update: SettingsUpdate,
+) -> Result<McpStatus, String> {
+    let bridge = state.inner().clone();
+    crate::file_io(move || {
+        let mut state = bridge.listener.lock().unwrap();
+        let port = update.port.unwrap_or(state.preferences.port);
+        let access = update.access.unwrap_or(state.preferences.access);
+        let listener =
+            if update.port.is_some() && (port != state.preferences.port || state.stop.is_none()) {
+                Some(bind(port)?)
+            } else {
+                None
+            };
+        if update.port.is_some() || update.access.is_some() {
+            let preferences = Preferences { port, access };
+            let bytes = serde_json::to_vec(&preferences).map_err(|error| error.to_string())?;
+            let parent = bridge.config.parent().ok_or("无效的 MCP 配置路径。")?;
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            crate::documents::write_document(&bridge.config, &bytes, true)?;
+            state.preferences = preferences;
+        }
+        state.allow_pack_import = access == Access::ReadWrite
+            && update.allow_pack_import.unwrap_or(state.allow_pack_import);
+        if let Some(listener) = listener {
+            serve(&bridge, &mut state, listener);
+        }
+        Ok(state.status())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -244,4 +412,65 @@ pub fn mcp_reply(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_modes_follow_read_only_annotations_and_pack_import_requires_consent() {
+        let tools = load_tools();
+        let mut allowed: Vec<_> = tools
+            .iter()
+            .filter(|tool| Access::ReadOnly.permits(tool))
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        allowed.sort_unstable();
+        assert_eq!(
+            allowed,
+            [
+                "capture_screenshot",
+                "get_replay_export",
+                "get_scene",
+                "list_blocks",
+                "render_block_states",
+                "search_palette"
+            ]
+        );
+        assert!(tools.iter().all(|tool| !Access::Disabled.permits(tool)));
+
+        let import = tools
+            .iter()
+            .find(|tool| tool.name == "import_resource_pack")
+            .unwrap();
+        let mut state = ListenerState {
+            preferences: Preferences::default(),
+            allow_pack_import: false,
+            stop: None,
+            generation: 0,
+            error: None,
+        };
+        assert!(
+            state
+                .tool_error(import)
+                .unwrap()
+                .contains("Resource pack import")
+        );
+        state.allow_pack_import = true;
+        assert!(state.tool_error(import).is_none());
+        state.preferences.access = Access::ReadOnly;
+        assert!(state.tool_error(import).unwrap().contains("read-only"));
+    }
+
+    #[test]
+    fn a_conflicting_port_fails_to_bind_and_can_be_retried() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = NonZeroU16::new(occupied.local_addr().unwrap().port()).unwrap();
+        assert!(bind(port).is_err());
+        drop(occupied);
+        assert_eq!(bind(port).unwrap().local_addr().unwrap().port(), port.get());
+        assert!(serde_json::from_value::<SettingsUpdate>(json!({ "port": 0 })).is_err());
+        assert!(serde_json::from_value::<SettingsUpdate>(json!({ "port": 65_536 })).is_err());
+    }
 }

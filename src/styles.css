@@ -57,24 +57,31 @@ kbd {
   border-bottom: 1px solid var(--line);
   background: var(--base);
 }
+.project-strip { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.project-strip > button { flex: none; }
+.project-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: thin; padding: 3px; }
 .project-tab {
-  gap: 9px;
-  max-width: 250px;
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: 230px;
   height: 34px;
-  padding: 0 10px;
+  padding-right: 2px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #222730;
   color: #dce2e8;
 }
-.project-tab:hover { background: #2b323c; }
-.project-tab > svg:first-child { color: #a9b5c4; }
-#project-name { overflow: hidden; text-overflow: ellipsis; }
+.project-tab:has([aria-current]) { border-color: #786044; background: #2d2824; }
+.project-tab-select { flex: 1; justify-content: flex-start; min-width: 0; height: 100%; padding: 0 7px; border-radius: 5px; }
+.project-tab-select:hover { background: #ffffff0a; }
+.project-tab-select > svg { color: #a9b5c4; width: 13px; height: 13px; }
+.project-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.project-tab-close { flex: none; }
 .dirty-dot, .connection-dot, .status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .dirty-dot { background: var(--accent); }
 .chevron { width: 13px; height: 13px; }
-.project-tab .chevron { color: var(--dim); }
-.topbar-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; padding-left: 10px; }
+.topbar-actions { display: flex; flex: none; align-items: center; gap: 5px; margin-left: auto; padding-left: 10px; }
 .button { height: 34px; padding: 0 12px; border-radius: 6px; font-size: 12px; font-weight: 550; }
 .quiet { color: #c9d1db; }
 .quiet:hover:not(:disabled) { background: #2a313b; color: #f2f4f6; }
@@ -325,6 +332,10 @@ kbd {
 .dialog-fields label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 .dialog-fields :is(input, select) { height: 34px; padding: 0 8px; }
 .mcp-permission { display: grid; gap: 5px; }
+.mcp-port-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.mcp-port-form input { font-family: var(--mono); }
+.mcp-setting-note { font-size: 11px; line-height: 1.5; color: var(--muted); }
+.mcp-setting-note.error { color: #f6a597; }
 .mcp-permission label { display: flex; align-items: center; gap: 8px; color: var(--text); }
 .mcp-permission input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .mcp-permission p { padding-left: 24px; font-size: 11px; line-height: 1.5; color: var(--muted); }

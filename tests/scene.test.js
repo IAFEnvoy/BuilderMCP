@@ -76,3 +76,20 @@ test('scene changes report the block data applied by edits, undo, and redo', () 
 
   assert.deepEqual(recordedBlocks, [edited, null, edited, initial, edited]);
 });
+test('scenes in separate project tabs share the clipboard and keep independent history', () => {
+  const clipboard = { selection: null };
+  const first = new BuildScene(emptyProject(), clipboard);
+  const second = new BuildScene(emptyProject(), clipboard);
+  first.setBlocks([{ pos: [0, 0, 0], state: 'stone' }]);
+  first.selectBox([0, 0, 0], [0, 0, 0]);
+  first.copySelection();
+  second.pasteSelection([4, 0, 0]);
+  assert.deepEqual(first.selected.map(block => block.pos), [[0, 0, 0]]);
+  assert.deepEqual(second.selected.map(block => block.pos), [[4, 0, 0]]);
+  assert.equal(first.undo(), true);
+  assert.equal(first.blocks.size, 0);
+  assert.equal(second.blocks.size, 1);
+  assert.equal(second.undo(), true);
+  assert.equal(second.blocks.size, 0);
+  assert.deepEqual(first.clipboardSize, [1, 1, 1]);
+});
