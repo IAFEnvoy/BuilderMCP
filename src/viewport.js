@@ -309,6 +309,7 @@ export class Viewport {
 
   updateBlocks(changes, side) {
     const dirty = new Set();
+    const readsNeighbors = this.catalog.connectedSheets.size || this.catalog.hasFluidTextures;
     for (const [key, change] of changes) {
       const [x, y, z] = (change.before ?? change.after).pos;
       const chunk = chunkKey(x, y, z);
@@ -318,8 +319,8 @@ export class Viewport {
         this.chunks.get(chunk).set(key, block);
       } else this.chunks.get(chunk)?.delete(key);
       dirty.add(chunk);
-      if (this.catalog.connectedSheets.size) {
-        // CT context can include a face-diagonal neighbor in another chunk.
+      if (readsNeighbors) {
+        // Connected textures and fluid corners can read diagonal cells across a chunk edge.
         for (let cx = chunkIndex(x - 1); cx <= chunkIndex(x + 1); cx++) {
           for (let cy = chunkIndex(y - 1); cy <= chunkIndex(y + 1); cy++) {
             for (let cz = chunkIndex(z - 1); cz <= chunkIndex(z + 1); cz++) dirty.add([cx, cy, cz].join(','));
@@ -387,14 +388,12 @@ export class Viewport {
     const blocks = this.chunks.get(key);
     if (!blocks?.size) { this.chunks.delete(key); return; }
     const batches = new Map();
-    const blockAt = this.catalog.connectedSheets.size
-      ? (x, y, z) => this.chunks.get(chunkKey(x, y, z))?.get(cellKey([x, y, z]))
-      : undefined;
+    const blockAt = (x, y, z) => this.chunks.get(chunkKey(x, y, z))?.get(cellKey([x, y, z]));
     for (const { pos, state, blockEntity } of blocks.values()) {
       const tint = tintFor(state.name);
       for (const part of this.catalog.parts(state, pos, blockEntity, blockAt)) {
         let connection;
-        if (blockAt) {
+        if (this.catalog.connectedSheets.size && !part.fluid) {
           if (!this.connectedFaces.has(part.key)) this.connectedFaces.set(part.key, connectedModelFaces(this.catalog, part));
           const faces = this.connectedFaces.get(part.key);
           if (faces.length) connection = connectFaces(faces, state, this.catalog.blocks.get(state.name)?.state.properties, pos, blockAt);
@@ -406,8 +405,9 @@ export class Viewport {
     }
     const view = new THREE.Group();
     for (const [id, { part, tint, connection, cells }] of batches) {
-      if (!connection && !this.models.has(id)) this.models.set(id, buildGeometry(this.catalog, part, tint));
-      const geometries = connection ? buildGeometry(this.catalog, part, tint, false, connection.patches) : this.models.get(id);
+      const ownsGeometry = Boolean(connection || part.fluid);
+      if (!ownsGeometry && !this.models.has(id)) this.models.set(id, buildGeometry(this.catalog, part, tint));
+      const geometries = ownsGeometry ? buildGeometry(this.catalog, part, tint, false, connection?.patches) : this.models.get(id);
       const matrix = new THREE.Matrix4();
       for (const batch of geometries) {
         const { material, source } = this.material(batch);
@@ -417,7 +417,7 @@ export class Viewport {
         cells.forEach((pos, index) => mesh.setMatrixAt(index, matrix.makeTranslation(...pos)));
         mesh.userData.cells = cells;
         mesh.userData.textureSource = source;
-        mesh.userData.ownsGeometry = Boolean(connection);
+        mesh.userData.ownsGeometry = ownsGeometry;
         if (part.marker) {
           this.markers.add(mesh);
           this.markerRotation.set(0, 0, 0, 0);
@@ -434,7 +434,8 @@ export class Viewport {
     if (this.materials.has(key)) return this.materials.get(key);
     const source = this.textureSource(batch.texture);
     const material = new THREE.MeshBasicMaterial({ visible: false, vertexColors: true });
-    const entry = { material, source, texture: source.texture, forceTranslucent: batch.forceTranslucent };
+    const { forceTranslucent, doubleSided } = batch;
+    const entry = { material, source, texture: source.texture, forceTranslucent, doubleSided };
     entry.ready = source.ready.then(image => {
       if (!image || this.materials.get(key) !== entry) return;
       applyTexture(entry, { ...image, image: source.player?.image ?? image.image });

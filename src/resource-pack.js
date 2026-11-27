@@ -4,6 +4,8 @@ import { isAir, stateOf } from './scene.js';
 import { specialBlockPart, specialBlockProperties } from './special-blocks.js';
 import { decodeTexture, TEXTURE_TICK_MS } from './texture-animation.js';
 import { readConnectedSheet } from './connected-textures.js';
+import { fluidPart, fluidProperties, fluidState, vanillaLiquidType } from './fluids.js';
+import { fluidOcclusion } from './model-geometry.js';
 
 const assetPath = /^(?:[^/]+\/)*?assets\/([a-z0-9_.-]+)\/(blockstates|models|items|textures|lang)\/(.+)$/;
 const bannerPatternPath = /^(?:[^/]+\/)*?data\/([a-z0-9_.-]+)\/banner_pattern\/([a-z0-9_./-]+)\.json$/;
@@ -257,6 +259,8 @@ function chooseWeighted(value, pos, salt) {
 export class BlockCatalog {
   #blocksByNamespace = new Map();
   #connectedPanes = new Map();
+  #fluidSprites = new Map();
+  #fluidShapes = new Map();
   #animationStart = performance.now();
 
   constructor(packs = [], locale = DEFAULT_LOCALE, officialLanguages = new Map()) {
@@ -293,9 +297,13 @@ export class BlockCatalog {
         for (const [key, value] of labels) layer.set(key, value);
       }
     }
+    for (const name of ['minecraft:water', 'minecraft:lava']) this.#registerFluid(name);
+    const hasModFluidTextures = [...this.textures.keys()].some(texture => !texture.startsWith('minecraft:') &&
+      texture.endsWith('_still') && this.textures.has(texture.slice(0, -6) + '_flow'));
     for (const [name, definition] of this.states) {
       try {
-        const properties = { ...propertyOptions(definition), ...specialBlockProperties(name) };
+        if (hasModFluidTextures && !name.startsWith('minecraft:')) this.#registerFluid(name);
+        const properties = { ...propertyOptions(definition), ...specialBlockProperties(name), ...this.#fluidProperties(name) };
         const defaults = Object.fromEntries(Object.entries(properties).map(([key, values]) => [key, values[0]]));
         const block = { name, label: this.label(name), category: categoryOf(name), properties, state: stateOf({ name, properties: defaults }) };
         this.blocks.set(name, block);
@@ -345,11 +353,13 @@ export class BlockCatalog {
   state(input) {
     const state = stateOf(input);
     const base = this.blocks.get(state.name)?.state;
-    return stateOf({ name: state.name, properties: { ...base?.properties, ...state.properties } });
+    const properties = { ...base?.properties, ...state.properties };
+    if (this.#fluidProperties(state.name) && state.properties?.liquid_depth !== undefined && state.properties.level === undefined) delete properties.level;
+    return stateOf({ name: state.name, properties });
   }
 
   stateProperties(name) {
-    return this.blocks.get(name)?.properties ?? specialBlockProperties(name);
+    return this.blocks.get(name)?.properties ?? this.#fluidProperties(name) ?? specialBlockProperties(name);
   }
 
   selectionProperties(blocks) {
@@ -479,7 +489,71 @@ export class BlockCatalog {
     });
   }
 
+  get hasFluidTextures() {
+    return this.#fluidSprites.size > 0;
+  }
+
+  #liquidType(name) {
+    return vanillaLiquidType(name) ?? (this.#fluidSprites.has(name) ? name : null);
+  }
+
+  #fluidProperties(name) {
+    return this.#liquidType(name) ? fluidProperties : undefined;
+  }
+
+  #registerFluid(name) {
+    const [namespace, path] = name.split(':');
+    const vanilla = namespace === 'minecraft';
+    const location = `${namespace}:block/${path}`;
+    const definition = this.states.get(name);
+    if (!vanilla && partsOf(definition).length) return;
+    const variants = variantsOf(definition);
+    const choice = variants.find(([key]) => key === 'level=0' || !key)?.[1] ?? variants[0]?.[1];
+    const reference = chooseWeighted(choice, [0, 0, 0], 0)?.model;
+    const model = (typeof reference === 'string' ? this.modelRef(reference, namespace) : null) ?? this.model(location);
+    const particle = model && this.textureMaterial(model, '#particle');
+    const forceTranslucent = name === 'minecraft:water' || particle?.forceTranslucent === true;
+    const texture = particle?.texture;
+    if (vanilla) {
+      const still = [texture, location + '_still', location + '_flow'].find(key => this.textures.has(key));
+      if (!still) return;
+      const flow = this.textures.has(location + '_flow') ? location + '_flow' : still;
+      const overlay = name === 'minecraft:water' && this.textures.has(location + '_overlay') ? location + '_overlay' : null;
+      this.#fluidSprites.set(name, { still, flow, overlay, forceTranslucent });
+    } else if (model?.elements.length === 0 && !model.generated && texture?.endsWith('_still') && !texture.startsWith('minecraft:')) {
+      // Mods can expose a liquid through a particle-only model and matching sprites.
+      const flow = texture.slice(0, -6) + '_flow';
+      if (this.textures.has(texture) && this.textures.has(flow)) this.#fluidSprites.set(name, { still: texture, flow, forceTranslucent });
+    }
+  }
+
+  #fluidOf = state => state && !isAir(state.name) ? fluidState(state, this.#liquidType(state.name)) : null;
+
+  #fluidOcclusionAt = block => {
+    if (!block) return null;
+    const { state, pos, blockEntity } = block;
+    return this.#fluidShape(state, this.#modelParts(state, pos, blockEntity));
+  };
+
+  #fluidShape(state, parts) {
+    const key = JSON.stringify([state.name, ...parts.map(part => part.key)]);
+    if (!this.#fluidShapes.has(key)) this.#fluidShapes.set(key, fluidOcclusion(this, state.name, parts));
+    return this.#fluidShapes.get(key);
+  }
+
   parts(state, pos, entity, blockAt) {
+    const fluid = this.hasFluidTextures ? this.#fluidOf(state) : null;
+    const sprites = fluid && this.#fluidSprites.get(fluid.type);
+    const parts = fluid?.standalone && sprites ? [] : this.#modelParts(state, pos, entity, blockAt);
+    if (sprites) {
+      const self = parts.length ? this.#fluidShape(state, parts) : null;
+      const part = fluidPart(fluid, sprites, pos, blockAt, this.#fluidOf, this.#fluidOcclusionAt, self);
+      if (part) parts.push(part);
+    }
+    return parts;
+  }
+
+  #modelParts(state, pos, entity, blockAt) {
     const { name, properties = {} } = state;
     if (isAir(name)) return [];
     const definition = this.states.get(name);

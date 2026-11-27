@@ -208,7 +208,8 @@ export class ModelPreview {
             texture.colorSpace = THREE.SRGBColorSpace;
             texture.magFilter = THREE.NearestFilter;
             texture.minFilter = THREE.NearestMipmapLinearFilter;
-            const entry = { material, texture, forceTranslucent: batch.forceTranslucent };
+            const { forceTranslucent, doubleSided } = batch;
+            const entry = { material, texture, forceTranslucent, doubleSided };
             applyTexture(entry, { ...source, image: player?.image ?? source.image });
             materials.set(key, entry);
           }

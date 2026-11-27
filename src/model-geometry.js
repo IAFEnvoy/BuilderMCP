@@ -97,7 +97,7 @@ function cardinal(vector) {
 }
 
 export function connectedModelFaces(catalog, part) {
-  if (!catalog.connectedSheets.size || part.marker) return [];
+  if (!catalog.connectedSheets.size || part.marker || part.fluid) return [];
   const { model, uvlock } = part;
   const rotation = modelRotation(part);
   const connected = [];
@@ -145,7 +145,111 @@ export function tintFor(name) {
   return white;
 }
 
+export function fluidOcclusion(catalog, name, parts) {
+  // Resource packs provide render models, so infer occlusion from boundary cull faces.
+  const overlay = /^minecraft:(?:glass|tinted_glass|ice|frosted_ice|slime_block|honey_block|\w+_stained_glass|\w+_leaves)$/.test(name);
+  const nonOccluding = overlay || name === 'minecraft:spawner' || name === 'minecraft:trial_spawner';
+  const spans = new Map();
+  let solid = false;
+  for (const part of parts) {
+    if (part.marker) continue;
+    const rotation = modelRotation(part);
+    if (!Object.values(axes).every(axis => cardinal(axis.clone().applyQuaternion(rotation)))) continue;
+    const toCell = point => new THREE.Vector3(...point).sub(center).applyQuaternion(rotation).add(center).multiplyScalar(1 / 16);
+    for (const element of part.model.elements) {
+      if (!numericVec(element?.from, 3) || !numericVec(element?.to, 3) || element.rotation) continue;
+      const a = toCell(element.from);
+      const b = toCell(element.to);
+      const lo = a.clone().min(b).toArray();
+      const hi = a.max(b).toArray();
+      const epsilon = 1e-6;
+      if (hi.some((max, i) => max - lo[i] < epsilon)) continue;
+      for (const direction of faces) {
+        const face = element.faces?.[direction];
+        if (face?.cullface !== direction) continue;
+        const normal = cardinal(new THREE.Vector3(...normals[direction]).applyQuaternion(rotation));
+        const axis = normal.findIndex(Boolean);
+        const side = normal[axis] > 0 ? 1 : 0;
+        if (Math.abs((side ? hi : lo)[axis] - side) > epsilon) continue;
+        if (lo.some((min, i) => i !== axis && i !== 1 && (min > epsilon || hi[i] < 1 - epsilon))) continue;
+        solid = true;
+        if (nonOccluding || catalog.textureMaterial(part.model, face.texture)?.forceTranslucent) continue;
+        const facing = faces.find(direction => normals[direction][axis] === normal[axis]);
+        if (!spans.has(facing)) spans.set(facing, []);
+        spans.get(facing).push(axis === 1 ? [0, 1] : [Math.max(0, lo[1]), Math.min(1, hi[1])]);
+      }
+    }
+  }
+  const covered = {};
+  for (const [direction, ranges] of spans) {
+    let height = 0;
+    for (const [start, end] of ranges.sort(([a], [b]) => a - b)) {
+      if (start > height + 1e-6) break;
+      height = Math.max(height, end);
+    }
+    covered[direction] = height > 1 - 1e-6 ? 1 : height;
+  }
+  return { faces: covered, solid, overlay };
+}
+
+function geometryBatch(batches, material) {
+  const key = materialKey(material);
+  if (!batches.has(key)) batches.set(key, { material, position: [], uv: [], color: [], indices: [] });
+  return batches.get(key);
+}
+
+function finishBatches(batches) {
+  return [...batches.values()].filter(batch => batch.indices.length).map(batch => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(batch.position, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(batch.uv, 2));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(batch.color, 3));
+    geometry.setIndex(batch.indices);
+    geometry.computeBoundingSphere();
+    return { ...batch.material, geometry };
+  });
+}
+
+const fluidShade = { up: 1, down: 0.5, north: 0.8, south: 0.8, west: 0.6, east: 0.6 };
+
+function buildFluidGeometry({ type, heights, angle, faces, sprites }, flatLight) {
+  const batches = new Map();
+  const { forceTranslucent } = sprites;
+  const tint = type === 'minecraft:water' ? water : white;
+  const surface = [[heights[0], heights[1]], [heights[3], heights[2]]];
+  const faceInset = 0.001;
+  const surfaceInset = faces.some(face => face.direction === 'up') ? faceInset : 0;
+  const bottomInset = faces.some(face => face.direction === 'down') ? faceInset : 0;
+  const sin = Math.sin(angle);
+  const cos = Math.cos(angle);
+  for (const { direction, texture, doubleSided } of faces) {
+    const batch = geometryBatch(batches, { texture, forceTranslucent, doubleSided });
+    const start = batch.position.length / 3;
+    const [nx, , nz] = normals[direction];
+    const color = tint.clone().multiplyScalar(flatLight ? 1 : fluidShade[direction]);
+    const sideUvSpan = texture === sprites.still && sprites.flow === sprites.still ? 1 : 0.5;
+    for (const [index, [x, top, z]] of corners[direction].entries()) {
+      const y = top ? surface[x][z] - surfaceInset : bottomInset;
+      let u = x;
+      let v = z;
+      if (nx || nz) {
+        u = index < 2 ? sideUvSpan : 0;
+        v = (1 - y) * sideUvSpan;
+      } else if (direction === 'up' && angle !== null) {
+        u = 0.5 + (x - 0.5) / 2 * cos + (z - 0.5) / 2 * sin;
+        v = 0.5 + (z - 0.5) / 2 * cos - (x - 0.5) / 2 * sin;
+      }
+      batch.position.push(x - nx * faceInset, y, z - nz * faceInset);
+      batch.uv.push(u, 1 - v);
+      batch.color.push(color.r, color.g, color.b);
+    }
+    batch.indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
+  }
+  return finishBatches(batches);
+}
+
 export function buildGeometry(catalog, part, tint = white, flatLight = false, patches) {
+  if (part.fluid) return buildFluidGeometry(part.fluid, flatLight);
   const { model, uvlock } = part;
   const rotation = modelRotation(part);
   const uvTransforms = uvlock ? Object.fromEntries(faces.map(face => [face, lockUv(face, rotation)])) : {};
@@ -163,9 +267,7 @@ export function buildGeometry(catalog, part, tint = white, flatLight = false, pa
       const resolved = catalog.textureMaterial(model, face.texture);
       const material = patch ? { ...resolved, texture: patch.sheet.texture }
         : catalog.textures.has(resolved?.texture) ? resolved : missingMaterial;
-      const key = materialKey(material);
-      if (!batches.has(key)) batches.set(key, { material, position: [], uv: [], color: [], indices: [] });
-      const batch = batches.get(key);
+      const batch = geometryBatch(batches, material);
       const start = batch.position.length / 3;
       const vertices = corners[direction].map(bits => {
         const vector = new THREE.Vector3(...bits.map((high, i) => high ? to[i] : from[i]));
@@ -198,23 +300,16 @@ export function buildGeometry(catalog, part, tint = white, flatLight = false, pa
       batch.indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
     }
   }
-  return [...batches.values()].filter(batch => batch.indices.length).map(batch => {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(batch.position, 3));
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(batch.uv, 2));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(batch.color, 3));
-    geometry.setIndex(batch.indices);
-    geometry.computeBoundingSphere();
-    return { ...batch.material, geometry };
-  });
+  return finishBatches(batches);
 }
 
-export function materialKey({ texture, forceTranslucent }) {
+export function materialKey({ texture, forceTranslucent, doubleSided }) {
+  if (doubleSided) return `${texture}|${Boolean(forceTranslucent)}|double-sided`;
   return forceTranslucent ? `${texture}|translucent` : texture;
 }
 
 export function applyTexture(entry, { image, translucent, missing }) {
-  const { material, texture, forceTranslucent } = entry;
+  const { material, texture, forceTranslucent, doubleSided } = entry;
   texture.image = image;
   texture.needsUpdate = true;
   material.map = texture;
@@ -222,5 +317,7 @@ export function applyTexture(entry, { image, translucent, missing }) {
   material.transparent = !missing && (forceTranslucent || translucent);
   material.alphaTest = material.transparent ? 0.04 : 0.5;
   material.depthWrite = !material.transparent;
+  material.side = doubleSided ? THREE.DoubleSide : THREE.FrontSide;
+  material.forceSinglePass = Boolean(doubleSided);
   material.needsUpdate = true;
 }
