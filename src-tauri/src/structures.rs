@@ -730,6 +730,54 @@ mod tests {
     }
 
     #[test]
+    fn java_formats_preserve_chest_loot_tables_and_full_long_seeds() {
+        let fixture: Structure = serde_json::from_value(json!({
+            "version": 1, "name": "Chests", "dataVersion": 5023,
+            "blocks": [
+                {"pos": [1, 0, 0], "state": {"name": "minecraft:chest"}, "blockEntity": {
+                    "lootTable": "minecraft:chests/simple_dungeon"
+                }},
+                {"pos": [2, 0, 0], "state": {"name": "minecraft:trapped_chest"}, "blockEntity": {
+                    "lootTable": "fixture:chests/entrance", "lootTableSeed": "-9223372036854775808"
+                }},
+                {"pos": [3, 0, 0], "state": {"name": "minecraft:waxed_oxidized_copper_chest"}, "blockEntity": {
+                    "lootTable": "fixture:chests/vault", "lootTableSeed": "9223372036854775807"
+                }}
+            ]
+        }))
+        .unwrap();
+        for format in [StructureFormat::Nbt, StructureFormat::Litematic] {
+            let bytes = encode(&fixture, format, true).unwrap();
+            assert_eq!(decode(&bytes, format, &fixture.name).unwrap(), fixture);
+        }
+
+        for (block, id, seed) in [
+            (&fixture.blocks[0], "minecraft:chest", None),
+            (
+                &fixture.blocks[1],
+                "minecraft:trapped_chest",
+                Some(i64::MIN),
+            ),
+            (&fixture.blocks[2], "minecraft:chest", Some(i64::MAX)),
+        ] {
+            let (entity_id, tag) = block_entities::write(block, fixture.data_version)
+                .unwrap()
+                .unwrap();
+            assert_eq!(entity_id, id);
+            assert_eq!(tag.get("LootTableSeed"), seed.map(NbtValue::Long).as_ref());
+        }
+        let trapped = &fixture.blocks[1];
+        assert_eq!(
+            block_entities::write(trapped, 1343).unwrap().unwrap().0,
+            "minecraft:chest"
+        );
+        assert_eq!(
+            block_entities::write(trapped, 512).unwrap().unwrap().0,
+            "Chest"
+        );
+    }
+
+    #[test]
     fn structures_store_the_exporter_version_and_used_namespaces() {
         let mut fixture = project();
         fixture.blocks.push(PlacedBlock {

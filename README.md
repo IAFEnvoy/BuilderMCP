@@ -131,3 +131,5 @@ MCP 写入或预览旗帜时可传入 `blockEntity` 和旗帜状态。拼图方�
   "follow_camera": true
 }
 ```
+
+普通箱子、陷阱箱和铜箱子可在右侧设置战利品表，数据随 Java `.nbt` 和 `.litematic` 保存。MCP 的 `set_blocks` 可传入 `blockEntity: {"lootTable":"minecraft:chests/simple_dungeon","lootTableSeed":"9223372036854775807"}`。种子用有符号 64 位十进制字符串表示，省略或设为 `"0"` 时由游戏随机生成。

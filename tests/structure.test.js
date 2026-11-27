@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { gunzipSync } from 'fflate';
 import { dataVersionFor } from '../src/minecraft-versions.js';
-import { defaultJigsaw } from '../src/block-entities.js';
+import { defaultJigsaw, writeBlockEntity } from '../src/block-entities.js';
 import { readNbt } from '../src/nbt.js';
 import { BuildScene } from '../src/scene.js';
 import { decodeStructure, encodeStructure } from '../src/structure.js';
@@ -127,4 +127,34 @@ test('Java structure formats retain per-block banner layers and jigsaw settings'
       }
     }
   }
+});
+
+test('chest loot tables round-trip with signed NBT long seeds and the matching entity IDs', async () => {
+  const lootTable = 'example:chests/treasure';
+  const project = {
+    version: 1, name: 'Chests', dataVersion: 5023,
+    blocks: [
+      { pos: [0, 0, 0], state: { name: 'minecraft:chest' }, blockEntity: { lootTable } },
+      { pos: [1, 0, 0], state: { name: 'minecraft:trapped_chest' }, blockEntity: { lootTable, lootTableSeed: '-9223372036854775808' } },
+      { pos: [2, 0, 0], state: { name: 'minecraft:waxed_oxidized_copper_chest' }, blockEntity: { lootTable, lootTableSeed: '9223372036854775807' } },
+      { pos: [3, 0, 0], state: { name: 'minecraft:chest' } },
+    ],
+  };
+  for (const format of ['nbt', 'litematic']) {
+    const bytes = encodeStructure(project, format);
+    const root = await readNbt(bytes);
+    const tags = format === 'nbt' ? root.blocks.map(block => block.nbt).filter(Boolean) : root.Regions.Main.TileEntities;
+    assert.deepEqual(tags.map(({ id, LootTable, LootTableSeed }) => [id, LootTable, LootTableSeed]), [
+      ['minecraft:chest', lootTable, undefined],
+      ['minecraft:trapped_chest', lootTable, -9223372036854775808n],
+      ['minecraft:chest', lootTable, 9223372036854775807n],
+    ]);
+    const reopened = new BuildScene(await decodeStructure(bytes, format, project.name)).snapshot();
+    assert.deepEqual(reopened, project);
+  }
+
+  const trapped = project.blocks[1];
+  assert.equal(writeBlockEntity(trapped.state, trapped.blockEntity, 1343).id, 'minecraft:chest');
+  assert.equal(writeBlockEntity(trapped.state, trapped.blockEntity, 512).id, 'Chest');
+  assert.throws(() => writeBlockEntity(trapped.state, { lootTable, lootTableSeed: '9223372036854775808' }, 5023), /64 位/);
 });

@@ -96,7 +96,7 @@ function writeEntity(nbt, entity) {
     if (Array.isArray(value)) {
       nbt.tag('list', key, { type: 'compound', items: value.map(layer => child => writeEntity(child, layer)) });
     } else {
-      nbt.tag(typeof value === 'number' ? 'int' : 'string', key, value);
+      nbt.tag(typeof value === 'bigint' ? 'long' : typeof value === 'number' ? 'int' : 'string', key, value);
     }
   }
 }

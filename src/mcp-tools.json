@@ -11,7 +11,7 @@
         "name": { "type": "string" }, "properties": { "type": "object", "additionalProperties": { "type": "string" } }
       } }
     ] },
-    "blockEntity": { "description": "Banner pattern layers or Java jigsaw settings for this block.", "oneOf": [
+    "blockEntity": { "description": "Banner patterns, Java jigsaw settings, or a Java chest loot table.", "oneOf": [
       { "type": "object", "required": ["patterns"], "additionalProperties": false, "properties": {
         "patterns": { "type": "array", "maxItems": 16, "items": {
           "type": "object", "required": ["pattern", "color"], "additionalProperties": false, "properties": {
@@ -25,6 +25,10 @@
         "final_state": { "type": "string", "maxLength": 2048 }, "joint": { "enum": ["aligned", "rollable"] },
         "selection_priority": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
         "placement_priority": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+      } },
+      { "type": "object", "required": ["lootTable"], "additionalProperties": false, "properties": {
+        "lootTable": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Java loot table resource ID, e.g. minecraft:chests/simple_dungeon." },
+        "lootTableSeed": { "type": "string", "pattern": "^[+-]?[0-9]{1,19}$", "description": "Optional signed 64-bit decimal string. Omit it or use \"0\" for a random seed." }
       } }
     ] }
   },
@@ -62,7 +66,7 @@
       } }
     },
     {
-      "name": "list_blocks", "description": "Read placed blocks and their states, including banner patterns and jigsaw settings when present. Results are ordered by Y, Z, X and paginated.",
+      "name": "list_blocks", "description": "Read placed blocks and their states, including banner patterns, jigsaw settings, and chest loot tables when present. Results are ordered by Y, Z, X and paginated.",
       "annotations": { "readOnlyHint": true, "openWorldHint": false },
       "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
         "from": { "$ref": "#/$defs/cell" }, "to": { "$ref": "#/$defs/cell" },
@@ -87,7 +91,7 @@
       } }
     },
     {
-      "name": "set_blocks", "description": "Set individual cells in one undoable operation. Optionally set blockEntity for a banner or jigsaw. Omit it to preserve existing data for the same block ID, or use null to clear it. Use a null state or minecraft:air to remove a cell.",
+      "name": "set_blocks", "description": "Set individual cells in one undoable operation. Optionally set blockEntity for a banner, jigsaw, or an ordinary, trapped, or copper chest. Omit it to preserve existing data for the same block ID, or use null to clear it. Use a null state or minecraft:air to remove a cell.",
       "annotations": { "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["blocks"], "additionalProperties": false, "properties": {
         "blocks": { "type": "array", "maxItems": 20000, "items": { "type": "object", "required": ["pos", "state"], "additionalProperties": false,

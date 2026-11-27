@@ -258,9 +258,11 @@ fn supported(path: &str) -> bool {
             .or_else(|| path.split_once(name).map(|(_, rest)| rest))
     };
     if let Some(data) = section("/data/")
-        && let Some((namespace, pattern)) = data.split_once("/banner_pattern/")
+        && let Some((namespace, relative)) = data.split_once('/')
         && valid_namespace(namespace)
-        && pattern.ends_with(".json")
+        && let Some((kind, name)) = relative.split_once('/')
+        && matches!(kind, "banner_pattern" | "loot_table" | "loot_tables")
+        && name.ends_with(".json")
     {
         return true;
     }
@@ -277,7 +279,9 @@ fn supported(path: &str) -> bool {
         return false;
     };
     match kind {
-        "blockstates" | "models" | "items" => name.ends_with(".json"),
+        "blockstates" | "models" | "items" | "loot_table" | "loot_tables" => {
+            name.ends_with(".json")
+        }
         "textures" => name.ends_with(".png") || name.ends_with(".png.mcmeta"),
         "lang" => name.rsplit_once('.').is_some_and(|(code, extension)| {
             (extension.eq_ignore_ascii_case("json") || extension.eq_ignore_ascii_case("lang"))
@@ -499,6 +503,13 @@ mod tests {
         let banner = "data/fixture/banner_pattern/test.json";
         fs::create_dir_all(folder.join(banner).parent().unwrap()).unwrap();
         fs::write(folder.join(banner), r#"{"asset_id":"fixture:test"}"#).unwrap();
+        let loot = "data/fixture/loot_table/chests/test.json";
+        fs::create_dir_all(folder.join(loot).parent().unwrap()).unwrap();
+        fs::write(
+            folder.join(loot),
+            r#"{"type":"minecraft:chest","pools":[]}"#,
+        )
+        .unwrap();
         fs::write(folder.join("README.txt"), "ignored").unwrap();
 
         let info = PackStore::new(root.clone()).import(&folder).unwrap();
@@ -524,6 +535,7 @@ mod tests {
         assert_eq!(json, item_json);
         assert!(archive.by_name(language).is_ok());
         assert!(archive.by_name(banner).is_ok());
+        assert!(archive.by_name(loot).is_ok());
         assert!(archive.by_name("README.txt").is_err());
         assert_eq!(fs::read_dir(root.join(&info.id)).unwrap().count(), 1);
         fs::rename(folder.join("assets"), folder.join("assets-offline")).unwrap();

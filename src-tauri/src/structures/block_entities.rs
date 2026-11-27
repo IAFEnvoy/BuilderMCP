@@ -5,6 +5,8 @@ use std::{collections::HashMap, sync::LazyLock};
 
 const MAX_LAYERS: usize = 16;
 const MODERN_PATTERN_VERSION: i32 = 3837;
+const NAMESPACED_BLOCK_ENTITY_VERSION: i32 = 704;
+const TRAPPED_CHEST_ENTITY_VERSION: i32 = 1460;
 const DYES: [&str; 16] = [
     "white",
     "orange",
@@ -33,6 +35,16 @@ static LEGACY_PATTERNS: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| {
 pub(super) enum BlockEntityData {
     Banner(Banner),
     Jigsaw(Jigsaw),
+    Chest(Chest),
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct Chest {
+    loot_table: String,
+    // The editor and MCP exchange decimal strings to preserve all 64 bits in JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loot_table_seed: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +91,28 @@ fn banner(name: &str) -> bool {
         .is_some_and(|name| DYES.contains(&name.strip_suffix("_wall").unwrap_or(name)))
 }
 
+fn chest_entity_id(name: &str, data_version: i32) -> Option<&'static str> {
+    let path = name.strip_prefix("minecraft:")?;
+    if !matches!(path, "chest" | "trapped_chest")
+        && !matches!(
+            path.strip_prefix("waxed_").unwrap_or(path),
+            "copper_chest"
+                | "exposed_copper_chest"
+                | "weathered_copper_chest"
+                | "oxidized_copper_chest"
+        )
+    {
+        return None;
+    }
+    Some(if data_version < NAMESPACED_BLOCK_ENTITY_VERSION {
+        "Chest"
+    } else if path == "trapped_chest" && data_version >= TRAPPED_CHEST_ENTITY_VERSION {
+        "minecraft:trapped_chest"
+    } else {
+        "minecraft:chest"
+    })
+}
+
 fn resource_id(value: &str) -> Option<String> {
     let (namespace, path) = value.split_once(':').unwrap_or(("minecraft", value));
     let valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c);
@@ -100,6 +134,33 @@ fn get_string<'a>(tag: &'a NbtMap, key: &str) -> Option<&'a str> {
     tag.get(key)
         .and_then(NbtValue::as_string)
         .map(String::as_str)
+}
+
+impl Chest {
+    fn from_nbt(tag: &NbtMap) -> Option<Self> {
+        let loot_table = resource_id(get_string(tag, "LootTable")?.trim())?;
+        let loot_table_seed = tag.get("LootTableSeed").and_then(|value| match value {
+            NbtValue::Long(seed) => Some(seed.to_string()),
+            _ => value.as_i32().map(|seed| seed.to_string()),
+        });
+        Some(Self {
+            loot_table,
+            loot_table_seed,
+        })
+    }
+
+    fn to_nbt(&self) -> Result<NbtMap, String> {
+        let id = resource_id(self.loot_table.trim()).ok_or("箱子的战利品表 ID 无效。")?;
+        let mut tag = nbt_compound([("LootTable", NbtValue::String(id))]);
+        if let Some(seed) = &self.loot_table_seed {
+            let seed = seed
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "战利品表种子需要是有符号 64 位十进制整数。")?;
+            tag.insert("LootTableSeed".into(), NbtValue::Long(seed));
+        }
+        Ok(tag)
+    }
 }
 
 impl Jigsaw {
@@ -204,6 +265,8 @@ pub(super) fn read(state: &SceneBlockState, tag: &NbtMap) -> Option<Box<BlockEnt
             state,
             Some(tag),
         ))));
+    } else if tag.get("LootTable").is_some() && chest_entity_id(&state.name, i32::MAX).is_some() {
+        return Chest::from_nbt(tag).map(|chest| Box::new(BlockEntityData::Chest(chest)));
     }
     None
 }
@@ -257,6 +320,11 @@ pub(super) fn write(
         }
         Some(BlockEntityData::Jigsaw(data)) if block.state.name == "minecraft:jigsaw" => {
             ("minecraft:jigsaw", data.to_nbt()?)
+        }
+        Some(BlockEntityData::Chest(data)) => {
+            let id = chest_entity_id(&block.state.name, data_version)
+                .ok_or("方块与方块实体的数据类型不一致。")?;
+            (id, data.to_nbt()?)
         }
         Some(_) => return Err("方块与方块实体的数据类型不一致。".into()),
         None if block.state.name == "minecraft:jigsaw" => (

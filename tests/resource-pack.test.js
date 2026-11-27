@@ -25,6 +25,20 @@ test('the missing block is available to render without populating the empty proj
   assert.equal(await catalog.image('minecraft:block/stone_bricks'), null);
 });
 
+test('chest loot table suggestions use modern and legacy pack paths and follow pack priority', async () => {
+  const base = await loadArchive(archive({
+    'assets/minecraft/loot_tables/chests/simple_dungeon.json': { pools: [] },
+    'data/example/loot_table/rooms/west.json': { type: 'minecraft:chest' },
+    'data/example/loot_tables/rooms/east.json': { type: 'chest' },
+    'data/example/loot_table/blocks/stone.json': { type: 'minecraft:block' },
+  }));
+  const higher = await loadArchive(archive({
+    'data/example/loot_table/rooms/east.json': { type: 'minecraft:entity' },
+  }));
+  assert.deepEqual(new BlockCatalog([base]).chestLootTableIds(), ['example:rooms/east', 'example:rooms/west', 'minecraft:chests/simple_dungeon']);
+  assert.deepEqual(new BlockCatalog([base, higher]).chestLootTableIds(), ['example:rooms/west', 'minecraft:chests/simple_dungeon']);
+});
+
 test('mod JAR labels try block and item keys in the current language before English', async () => {
   const definition = { variants: { '': { model: 'example:block/shelf' } } };
   const mod = await loadArchive(archive({

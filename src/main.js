@@ -381,11 +381,11 @@ function positionBrushPopover() {
   brushPopover.style.top = `${Math.max(gap, Math.min(rect.top, window.innerHeight - brushPopover.offsetHeight - gap))}px`;
 }
 
-function statePropertyRow(key, field) {
+function statePropertyRow(key, field, title = key) {
   const label = document.createElement('label');
   label.className = 'property';
   const caption = document.createElement('span');
-  caption.textContent = caption.title = key;
+  caption.textContent = caption.title = title;
   field.name = key;
   label.append(caption, field);
   return label;
@@ -505,6 +505,8 @@ selectionStateFields.addEventListener('keydown', event => {
 const entityForm = byId('block-entity-form');
 const entityFields = byId('block-entity-fields');
 const addBannerLayer = byId('banner-add-layer');
+const entityTitles = { banner: '旗帜图案', chest: '箱子战利品', jigsaw: '拼图方块参数' };
+const chestLabels = { lootTable: '战利品表 ID', lootTableSeed: '战利品种子' };
 const jigsawLabels = {
   name: '名称', target: '目标名称', pool: '目标池', final_state: '替换为',
   joint: '连接方式', selection_priority: '选择优先级', placement_priority: '放置优先级',
@@ -556,7 +558,7 @@ function renderBlockEntity(block) {
   entityFields.replaceChildren();
   if (!kind) return;
 
-  byId('block-entity-title').textContent = kind === 'banner' ? '旗帜图案' : '拼图方块参数';
+  byId('block-entity-title').textContent = entityTitles[kind];
   addBannerLayer.hidden = kind !== 'banner';
   if (kind === 'banner') {
     const layers = block.blockEntity?.patterns ?? [];
@@ -564,30 +566,35 @@ function renderBlockEntity(block) {
     addBannerLayer.disabled = layers.length >= MAX_BANNER_LAYERS;
     return;
   }
-  const fields = block.blockEntity ?? defaultJigsaw(block.state);
+  const chest = kind === 'chest';
+  const labels = chest ? chestLabels : jigsawLabels;
+  const fields = chest ? { lootTable: '', lootTableSeed: '', ...block.blockEntity } : block.blockEntity ?? defaultJigsaw(block.state);
   for (const [key, value] of Object.entries(fields)) {
-    const label = document.createElement('label');
-    label.className = 'property';
-    const caption = document.createElement('span');
-    caption.textContent = jigsawLabels[key];
     const field = document.createElement(key === 'joint' ? 'select' : 'input');
-    field.name = key;
     if (key === 'joint') field.append(new Option('对齐', 'aligned'), new Option('可滚动', 'rollable'));
     else if (typeof value === 'number') {
       field.type = 'number';
       field.min = '-2147483648';
       field.max = '2147483647';
       field.step = '1';
-    } else field.maxLength = key === 'final_state' ? 2048 : 256;
-    field.required = true;
+    } else {
+      field.maxLength = key === 'lootTableSeed' ? 20 : key === 'final_state' ? 2048 : 256;
+    }
+    if (key === 'lootTable') {
+      field.setAttribute('list', 'chest-loot-table-ids');
+      field.placeholder = '留空清除';
+    } else if (key === 'lootTableSeed') field.placeholder = '留空或 0 为随机';
+    field.required = !chest;
     field.value = value;
-    label.append(caption, field);
-    entityFields.append(label);
+    entityFields.append(statePropertyRow(key, field, labels[key]));
   }
 }
 
-function updateBannerPatterns() {
+function updateBlockEntityOptions() {
   byId('banner-pattern-ids').replaceChildren(...catalog.bannerPatternIds().map(id => new Option(id, id)));
+  const lootTables = document.createDocumentFragment();
+  for (const id of catalog.chestLootTableIds()) lootTables.append(new Option(id, id));
+  byId('chest-loot-table-ids').replaceChildren(lootTables);
 }
 
 addBannerLayer.addEventListener('click', () => {
@@ -603,12 +610,17 @@ entityForm.addEventListener('submit', event => {
   const block = inspectedBlock;
   if (!block) return;
   try {
-    const entity = blockEntityKind(block.state.name) === 'banner'
+    const kind = blockEntityKind(block.state.name);
+    let entity = kind === 'banner'
       ? { patterns: [...entityFields.children].map(row => ({
         pattern: row.querySelector('input').value, color: row.querySelector('select').value,
       })) }
       : Object.fromEntries([...entityFields.querySelectorAll('input, select')].map(field =>
         [field.name, field.type === 'number' ? field.valueAsNumber : field.value]));
+    if (kind === 'chest') {
+      if (!entity.lootTableSeed.trim()) delete entity.lootTableSeed;
+      if (!entity.lootTable.trim()) entity = null;
+    }
     if (build.setBlocks([{ pos: block.pos, state: block.state, blockEntity: entity }])) status('已更新方块实体数据');
   } catch (error) { handleError(error); }
 });
@@ -1118,7 +1130,7 @@ function updateCatalog() {
   modelPreview.setCatalog();
   chooseBrush(brush && catalog.blocks.has(brush.name) ? brush : null, false, brushEntity);
   renderSelectionState(build.selected, true);
-  updateBannerPatterns();
+  updateBlockEntityOptions();
   viewport?.setCatalog(catalog);
   const selectedModId = modIdFilter.value;
   renderModIds();

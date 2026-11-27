@@ -24,6 +24,8 @@ export function bannerColor(name) {
 export function blockEntityKind(name) {
   if (name === 'minecraft:jigsaw') return 'jigsaw';
   if (bannerColor(name)) return 'banner';
+  if (name === 'minecraft:chest' || name === 'minecraft:trapped_chest' ||
+    /^minecraft:(?:waxed_)?(?:(?:exposed|weathered|oxidized)_)?copper_chest$/.test(name)) return 'chest';
   return null;
 }
 
@@ -49,10 +51,24 @@ function i32(value) {
   return value;
 }
 
+function lootSeed(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (/^[+-]?[0-9]{1,19}$/.test(text)) {
+    const seed = BigInt(text);
+    if (seed >= -(1n << 63n) && seed < (1n << 63n)) return seed.toString();
+  }
+  throw new Error('战利品表种子需要是有符号 64 位十进制整数。');
+}
+
 export function blockEntityOf(state, value) {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('方块实体数据需要是对象。');
   switch (blockEntityKind(state.name)) {
+    case 'chest': {
+      if (Object.keys(value).some(key => key !== 'lootTable' && key !== 'lootTableSeed')) throw new Error('箱子战利品数据含有未知字段。');
+      const lootTable = id(value.lootTable);
+      return value.lootTableSeed === undefined ? { lootTable } : { lootTable, lootTableSeed: lootSeed(value.lootTableSeed) };
+    }
     case 'banner': {
       if (!Array.isArray(value.patterns) || value.patterns.length > MAX_BANNER_LAYERS) throw new Error('旗帜最多支持 16 层图案。');
       const patterns = value.patterns.map(layer => {
@@ -83,6 +99,11 @@ export function readBlockEntity(state, tag) {
   if (!tag || typeof tag !== 'object') return undefined;
   try {
     const kind = blockEntityKind(state.name);
+    if (kind === 'chest' && typeof tag.LootTable === 'string') {
+      const { LootTable: lootTable, LootTableSeed: seed } = tag;
+      const lootTableSeed = typeof seed === 'bigint' || Number.isSafeInteger(seed) ? String(seed) : undefined;
+      return blockEntityOf(state, { lootTable, lootTableSeed });
+    }
     if (kind === 'banner') {
       const patterns = Array.isArray(tag.patterns) ? tag.patterns : Array.isArray(tag.Patterns) ? tag.Patterns : [];
       const layers = [];
@@ -110,9 +131,17 @@ export function readBlockEntity(state, tag) {
 export function writeBlockEntity(state, value, dataVersion) {
   const kind = blockEntityKind(state.name);
   if (kind === 'jigsaw') return { id: 'minecraft:jigsaw', ...(blockEntityOf(state, value) ?? defaultJigsaw(state)) };
-  if (kind !== 'banner') return null;
+  if (kind !== 'banner' && kind !== 'chest') return null;
   const data = blockEntityOf(state, value);
   if (!data) return null;
+  if (kind === 'chest') {
+    // Before flattening, trapped chests used the ordinary chest entity type.
+    const id = dataVersion < 704 ? 'Chest' : state.name === 'minecraft:trapped_chest' && dataVersion >= 1460
+      ? 'minecraft:trapped_chest' : 'minecraft:chest';
+    const tag = { id, LootTable: data.lootTable };
+    if (data.lootTableSeed !== undefined) tag.LootTableSeed = BigInt(data.lootTableSeed);
+    return tag;
+  }
   if (dataVersion >= 3837) return { id: 'minecraft:banner', patterns: data.patterns };
   const Patterns = data.patterns.map(({ pattern, color }) => {
     const shortId = legacyIds.get(pattern);

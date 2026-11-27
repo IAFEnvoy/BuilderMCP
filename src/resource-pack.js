@@ -9,6 +9,7 @@ import { fluidOcclusion } from './model-geometry.js';
 
 const assetPath = /^(?:[^/]+\/)*?assets\/([a-z0-9_.-]+)\/(blockstates|models|items|textures|lang)\/(.+)$/;
 const bannerPatternPath = /^(?:[^/]+\/)*?data\/([a-z0-9_.-]+)\/banner_pattern\/([a-z0-9_./-]+)\.json$/;
+const lootTablePath = /^(?:[^/]+\/)*?(?:data|assets)\/([a-z0-9_.-]+)\/loot_tables?\/([a-z0-9_./-]+)\.json$/;
 const patternTexturePath = /^([a-z0-9_.-]+):entity\/banner\/([a-z0-9_./-]+)$/;
 const MAX_EXPANDED_BYTES = 384 * 1024 * 1024;
 const preferred = ['north', 'y', 'bottom', 'straight', 'false', 'single', 'none', '0'];
@@ -47,7 +48,7 @@ function parseJson(bytes) {
 }
 
 function supported(file) {
-  if (file === 'version.json' || bannerPatternPath.test(file)) return true;
+  if (file === 'version.json' || bannerPatternPath.test(file) || lootTablePath.test(file)) return true;
   const [, , kind, path] = assetPath.exec(file) ?? [];
   if (kind === 'blockstates' || kind === 'models' || kind === 'items') return path.endsWith('.json');
   if (kind === 'textures') return /\.png(?:\.mcmeta)?$/.test(path);
@@ -86,7 +87,7 @@ export async function loadArchive(bytes, progress) {
       },
     }, (error, data) => error ? reject(error) : resolve(data));
   });
-  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), connectedSheets: new Map(), animation: new Map(), languages: new Map(), bannerPatterns: new Map(), minecraftVersion: null };
+  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), connectedSheets: new Map(), animation: new Map(), languages: new Map(), bannerPatterns: new Map(), lootTables: new Map(), minecraftVersion: null };
   const languageEntries = [];
   const entries = Object.entries(files);
   const total = entries.length;
@@ -113,6 +114,19 @@ export async function loadArchive(bytes, progress) {
       const definition = parseJson(data);
       if (typeof definition?.asset_id === 'string' && /^(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+$/.test(definition.asset_id)) {
         pack.bannerPatterns.set(banner[1] + ':' + banner[2], qualify(definition.asset_id, 'minecraft'));
+      }
+      processed++;
+      continue;
+    }
+    const loot = lootTablePath.exec(filename);
+    if (loot) {
+      const [, namespace, path] = loot;
+      const definition = parseJson(data);
+      const id = `${namespace}:${path}`;
+      if (definition && id.length <= 256) {
+        const { type } = definition;
+        pack.lootTables.set(id, type === 'minecraft:chest' || type === 'chest' ||
+          (type === undefined && path.startsWith('chests/')));
       }
       processed++;
       continue;
@@ -153,8 +167,8 @@ export async function loadArchive(bytes, progress) {
     processed++;
   }
   if (!pack.states.has('minecraft:stone') || !pack.languages.get(ENGLISH_LOCALE)?.has('block.minecraft.stone')) pack.minecraftVersion = null;
-  if (!pack.states.size && !pack.models.size && !pack.items.size && !pack.textures.size && !pack.animation.size && !pack.languages.size && !pack.bannerPatterns.size) {
-    throw new Error('资源包中没有找到可用的方块数据、纹理或译名。');
+  if (!pack.states.size && !pack.models.size && !pack.items.size && !pack.textures.size && !pack.animation.size && !pack.languages.size && !pack.bannerPatterns.size && !pack.lootTables.size) {
+    throw new Error('资源包中没有找到可用的方块数据、纹理、译名或战利品表。');
   }
   progress?.({ stage: 'index', processed, total });
   return pack;
@@ -271,6 +285,7 @@ export class BlockCatalog {
     this.connectedSheets = new Map();
     this.languages = new Map();
     this.bannerPatterns = new Map();
+    this.lootTables = new Map();
     this.locale = locale;
     this.officialLanguages = officialLanguages;
     this.blocks = new Map();
@@ -281,6 +296,7 @@ export class BlockCatalog {
       for (const [key, value] of pack.models) this.models.set(key, value);
       for (const [key, value] of pack.items ?? []) this.items.set(key, value);
       for (const [key, value] of pack.bannerPatterns ?? []) this.bannerPatterns.set(key, value);
+      for (const [key, value] of pack.lootTables ?? []) this.lootTables.set(key, value);
       for (const [key, bytes] of pack.textures) {
         this.textures.set(key, { bytes });
         const sheet = pack.connectedSheets?.get(key);
@@ -411,6 +427,12 @@ export class BlockCatalog {
       if (match && match[2] !== 'banner_base') ids.add(match[1] + ':' + match[2]);
     }
     return [...ids].sort();
+  }
+
+  chestLootTableIds() {
+    const ids = [];
+    for (const [id, isChest] of this.lootTables) if (isChest) ids.push(id);
+    return ids.sort();
   }
 
   model(name, visiting = new Set()) {
