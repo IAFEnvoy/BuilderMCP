@@ -80,7 +80,7 @@
       } }
     },
     {
-      "name": "import_resource_pack", "description": "Import a local resource pack into the global library at highest priority. Requires the user to enable resource pack imports in the editor's MCP settings. Returns the installed pack and its block state count after the catalog is updated.",
+      "name": "import_resource_pack", "description": "Add a local resource pack to the global library at highest priority. The desktop app links to its original path. Requires the user to enable resource pack imports in the editor's MCP settings. Returns the pack and its block state count after the catalog is updated.",
       "annotations": { "destructiveHint": false, "openWorldHint": false },
       "inputSchema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": {
         "path": { "type": "string", "minLength": 1, "description": "Absolute path on the machine running the editor. The desktop app accepts .zip, .jar, or an unpacked resource pack directory containing assets. The DSH sidebar accepts .zip and .jar." }

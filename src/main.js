@@ -1180,8 +1180,12 @@ function updatePackControls() {
 
 function renderPacks() {
   packList.replaceChildren();
-  const active = [...packs.values()].filter(pack => pack.data).length;
-  byId('pack-summary').textContent = active ? `${active} 个全局资源包` : '尚未加载资源包';
+  const listed = [...packs.values()];
+  const active = listed.filter(pack => pack.data).length;
+  const failed = listed.filter(pack => pack.error).length;
+  byId('pack-summary').textContent = failed
+    ? `${active} 个已加载 · ${failed} 个失败`
+    : active ? `${active} 个全局资源包` : '尚未加载资源包';
   byId('pack-manager').lastChild.textContent = packs.size ? '管理' : '导入';
   if (!packs.size) {
     const message = document.createElement('p');
@@ -1189,8 +1193,7 @@ function renderPacks() {
     message.textContent = packBusy ? '正在读取资源包…' : desktop ? '尚未导入资源包' : '请在桌面应用中导入资源包';
     packList.append(message);
   }
-  const displayedPacks = [...packs.values()].reverse();
-  for (const pack of displayedPacks) {
+  for (const pack of listed.reverse()) {
     const row = document.createElement('div');
     row.className = 'pack-row';
     row.dataset.packId = pack.id;
@@ -1225,12 +1228,18 @@ function renderPacks() {
       summary.push(`${pack.data.languages.size.toLocaleString()} 种语言`);
       detail.title = [...pack.data.languages.keys()].map(localeName).join('、');
     }
-    detail.textContent = pack.error ? `加载失败 · ${kind}` : pack.data ? [kind, ...summary].join(' · ') : '正在加载…';
-    if (pack.error) detail.title = pack.error;
+    detail.textContent = pack.error ? `加载失败 · ${pack.error}` : pack.data ? [kind, ...summary].join(' · ') : '正在加载…';
+    if (pack.error) detail.className = 'pack-load-error';
     text.append(name, detail);
+    if (pack.path) {
+      const source = document.createElement('span');
+      source.className = 'pack-source';
+      source.textContent = source.title = pack.path;
+      text.append(source);
+    }
     const remove = document.createElement('button');
     remove.className = 'icon-button small danger pack-remove';
-    remove.title = '移除 AppData 中的副本';
+    remove.title = '从资源包列表移除';
     remove.setAttribute('aria-label', `移除 ${pack.name}`);
     remove.append(icon('trash-2'));
     remove.addEventListener('click', () => packAction(async () => {
@@ -1273,9 +1282,13 @@ function showPackProgress(progress) {
 async function loadPack(pack, total, completed) {
   const progress = { total, completed, name: pack.name };
   showPackProgress({ ...progress, stage: '读取文件' });
-  return loadArchive(await packsOnDisk.read(pack.id), ({ stage, processed, total: files }) => {
-    showPackProgress({ ...progress, stage: stage === 'unpack' ? '解压资源' : '索引文件', processed, files });
-  });
+  try {
+    pack.data = await loadArchive(await packsOnDisk.read(pack.id), ({ stage, processed, total: files }) => {
+      showPackProgress({ ...progress, stage: stage === 'unpack' ? '解压资源' : '索引文件', processed, files });
+    });
+  } catch (error) {
+    pack.error = errorMessage(error);
+  }
 }
 
 function packAction(action, { refreshList = renderPacks, propagateError = false } = {}) {
@@ -1325,21 +1338,11 @@ function savePackOrder(displayOrder, movedId) {
 }
 
 async function importPack(path, total, completed, name) {
-  showPackProgress({ total, completed, name, stage: '保存资源包' });
+  showPackProgress({ total, completed, name, stage: '添加资源包' });
   const pack = await packsOnDisk.import(path);
-  try {
-    pack.data = await loadPack(pack, total, completed);
-  } catch (error) {
-    try {
-      await packsOnDisk.remove(pack.id);
-    } catch (cleanupError) {
-      pack.error = errorMessage(error);
-      packs.set(pack.id, pack);
-      throw new Error(`${pack.error} 清理副本失败。${errorMessage(cleanupError)}`);
-    }
-    throw error;
-  }
   packs.set(pack.id, pack);
+  await loadPack(pack, total, completed);
+  if (pack.error) throw new Error(pack.error);
   return pack;
 }
 
@@ -1348,6 +1351,7 @@ async function importPacks(paths) {
   const failures = [];
   const total = paths.length;
   const imported = [];
+  const previousPackCount = packs.size;
   for (const [completed, path] of paths.entries()) {
     const { filename } = fileInfo(path);
     try {
@@ -1356,16 +1360,16 @@ async function importPacks(paths) {
       failures.push(`${filename} · ${errorMessage(error)}`);
     }
   }
-  if (imported.length) {
+  if (packs.size !== previousPackCount) {
     showPackProgress({ total, completed: total, stage: '更新方块库' });
     try {
       await packsOnDisk.setOrder([...packs.keys()]);
     } catch (error) {
       failures.push('保存资源包顺序失败。' + errorMessage(error));
     }
-    updateCatalog();
+    if (imported.length) updateCatalog();
   }
-  status(`已导入 ${imported.length} / ${total} 个资源包`);
+  status(`已加载 ${imported.length} / ${total} 个资源包`);
   if (failures.length) throw new Error(failures.join('\n'));
   return imported;
 }
@@ -1399,9 +1403,7 @@ async function loadPacks() {
     renderPacks();
     let completed = 0;
     for (const pack of packs.values()) {
-      try { pack.data = await loadPack(pack, packs.size, completed); }
-      catch (error) { pack.error = errorMessage(error); }
-      completed++;
+      await loadPack(pack, packs.size, completed++);
     }
     if (packs.size) showPackProgress({ total: packs.size, completed, stage: '更新方块库' });
     updateCatalog();

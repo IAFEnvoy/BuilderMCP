@@ -40,7 +40,9 @@ npm run tauri dev
 
 ## 全局资源包
 
-在左下角「资源包」点「导入 ZIP / JAR」可同时选择多个 `.zip` 资源包、Minecraft 客户端或模组的 `.jar`。「批量导入目录」会按文件名顺序导入所选目录直接包含的 ZIP 和 JAR。「导入解包资源包」接受带有 `assets` 的资源包根目录。Windows 上的副本保存在 `%APPDATA%\com.iafenvoy.buildermcp\resource-packs`。所有项目共享这份资源库，删除原文件后也能继续使用。
+在左下角「资源包」点「导入 ZIP / JAR」可同时选择多个 `.zip` 资源包、Minecraft 客户端或模组的 `.jar`。「批量导入目录」会按文件名顺序导入所选目录直接包含的 ZIP 和 JAR。「导入解包资源包」接受带有 `assets` 的资源根目录，例如模组的 `src/main/resources` 或 `src/generated/resources`。
+
+桌面版在应用数据目录保存资源包的路径和顺序，所有项目共享这些记录。管理界面会显示每个包的来源路径。启动时从原路径读取最新内容，缺失或损坏的包会保留条目并显示失败原因，其余包继续加载。移除条目只删除路径记录。旧版导入的资源包使用当时保存在应用数据目录中的文件，因为旧记录没有原始路径。
 
 把文件拖到桌面应用窗口时，`.zip` 和 `.jar` 会导入资源包，`.nbt`、`.litematic` 和 `.mcstructure` 会打开建筑。拖入多个结构时可选择其中一个，切换建筑前会检查未保存的修改。
 
@@ -87,7 +89,7 @@ npm run tauri dev
 
 `search_palette` 可传 `"mod_id": "minecraft"` 只查原版方块，也可以同时传 `query` 搜索名称。
 
-`import_resource_pack` 接受运行编辑器的机器上的绝对 `path`。桌面版支持 ZIP、JAR 和包含 `assets` 的解包资源包目录，侧栏模式支持 ZIP 和 JAR。用户需要先在顶部「MCP」面板勾选「允许 MCP 导入资源包」。权限仅在本次编辑器会话有效。工具返回时，新包已位于全局资源包列表顶部，可用 `search_palette` 查询方块。
+`import_resource_pack` 接受运行编辑器的机器上的绝对 `path`。桌面版按原路径链接 ZIP、JAR 和包含 `assets` 的解包资源包目录，侧栏模式支持 ZIP 和 JAR。用户需要先在顶部「MCP」面板勾选「允许 MCP 导入资源包」。权限仅在本次编辑器会话有效。导入成功后，新包位于全局资源包列表顶部，可用 `search_palette` 查询方块。
 
 调用 `select_box` 和 `copy_selection` 后，向 `paste_selection` 传入目标 `origin` 即可放置副本。MCP 和编辑器共用剪贴板。
 

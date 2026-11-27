@@ -4,17 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
-use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const MAX_ARCHIVE_BYTES: u64 = 384 * 1024 * 1024;
-const MAX_FOLDER_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_FOLDER_ENTRIES: usize = 150_000;
-const FOLDER_VIEW_NAME: &str = "view-v4.zip";
 const ORDER_FILE_NAME: &str = "order.json";
 
 #[derive(Clone)]
@@ -27,6 +25,8 @@ pub struct PackInfo {
     id: String,
     pub name: String,
     kind: PackKind,
+    #[serde(default)]
+    path: PathBuf,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -66,17 +66,19 @@ impl PackStore {
     }
 
     pub fn list(&self) -> Result<Vec<PackInfo>, String> {
-        if !self.root.exists() {
-            return Ok(Vec::new());
-        }
-        let mut packs: Vec<_> = fs::read_dir(&self.root)
-            .map_err(message)?
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(message(error)),
+        };
+        let mut packs: Vec<_> = entries
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
                 let id = entry.file_name();
                 let id = id.to_str()?;
-                if !valid_id(id) || !entry.file_type().ok()?.is_dir() || is_link(&path).ok()? {
+                let metadata = entry.metadata().ok()?;
+                if !valid_id(id) || !metadata.is_dir() || is_link(&metadata) {
                     return None;
                 }
                 let info = read_info(&path).ok()?;
@@ -117,103 +119,91 @@ impl PackStore {
     }
 
     pub fn import(&self, source: &Path) -> Result<PackInfo, String> {
-        fs::create_dir_all(&self.root).map_err(message)?;
+        if !source.is_absolute() {
+            return Err("请提供资源包 ZIP、JAR 或文件夹的绝对路径。".into());
+        }
         let name = source
             .file_name()
             .ok_or("请选择资源包 ZIP、JAR 或文件夹。")?
             .to_string_lossy()
             .into_owned();
-        let source = source.canonicalize().map_err(message)?;
-        let root = self.root.canonicalize().map_err(message)?;
-        if root.starts_with(&source) || source.starts_with(&root) {
-            return Err("请选择资源包存储目录以外的文件或文件夹。".into());
-        }
-        let kind = if source.is_dir() {
-            if !source.join("assets").is_dir()
-                || is_link(&source.join("assets")).map_err(message)?
-            {
-                return Err("请选择包含 assets 目录的资源包根文件夹。".into());
-            }
+        let metadata = fs::metadata(source).map_err(resource_error)?;
+        let kind = if metadata.is_dir() {
             PackKind::Folder
+        } else if metadata.is_file() {
+            PackKind::archive(source).ok_or("请选择 ZIP、JAR 或资源包文件夹。")?
         } else {
-            PackKind::archive(&source).ok_or("请选择 ZIP、JAR 或资源包文件夹。")?
+            return Err("请选择 ZIP、JAR 或资源包文件夹。".into());
         };
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(message)?
             .as_millis();
-        let id = format!("{timestamp:013}-{}", Uuid::new_v4());
-        let staging = root.join(format!(".import-{id}"));
-        fs::create_dir(&staging).map_err(message)?;
-        let info = PackInfo { id, name, kind };
-        let result = (|| {
-            if matches!(kind, PackKind::Folder) {
-                let target = staging.join("folder");
-                copy_folder(&source, &target, &mut 0, &mut 0, 0)?;
-                let zip = folder_archive(
-                    &target,
-                    File::create(staging.join(FOLDER_VIEW_NAME)).map_err(message)?,
-                )?;
-                zip.sync_all().map_err(message)?;
-            } else {
-                let target = staging.join(if matches!(kind, PackKind::Jar) {
-                    "pack.jar"
-                } else {
-                    "pack.zip"
-                });
-                if fs::metadata(&source).map_err(message)?.len() > MAX_ARCHIVE_BYTES {
-                    return Err("资源包文件超过 384 MiB。".into());
-                }
-                fs::copy(&source, &target).map_err(message)?;
-                validate_archive(&target)?;
-            }
-            let metadata = serde_json::to_vec(&info).map_err(message)?;
-            fs::write(staging.join("pack.json"), metadata).map_err(message)?;
-            fs::rename(&staging, root.join(&info.id)).map_err(message)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&staging);
+        let info = PackInfo {
+            id: format!("{timestamp:013}-{}", Uuid::new_v4()),
+            name,
+            kind,
+            path: source.to_owned(),
+        };
+        let bytes = serde_json::to_vec(&info).map_err(message)?;
+        let entry = self.root.join(&info.id);
+        fs::create_dir_all(&entry).map_err(message)?;
+        if let Err(error) = write_document(&entry.join("pack.json"), &bytes, false) {
+            let _ = fs::remove_dir(&entry);
+            return Err(error);
         }
-        result.map(|()| info)
+        Ok(info)
     }
 
     pub fn bytes(&self, id: &str) -> Result<Vec<u8>, String> {
-        let path = self.entry(id)?;
-        let file = match read_info(&path)?.kind {
-            PackKind::Zip => path.join("pack.zip"),
-            PackKind::Jar => path.join("pack.jar"),
-            PackKind::Folder => folder_view(&path)?,
-        };
-        if fs::metadata(&file).map_err(message)?.len() > MAX_ARCHIVE_BYTES {
+        let (_, info) = self.entry(id)?;
+        let metadata = fs::metadata(&info.path).map_err(resource_error)?;
+        if matches!(info.kind, PackKind::Folder) {
+            if !metadata.is_dir() {
+                return Err("资源包路径不再指向文件夹。".into());
+            }
+            return folder_archive(&info.path);
+        }
+        if !metadata.is_file() {
+            return Err("资源包路径不再指向文件。".into());
+        }
+        if metadata.len() > MAX_ARCHIVE_BYTES {
             return Err("资源包文件超过 384 MiB。".into());
         }
-        fs::read(file).map_err(message)
+        let mut bytes = Vec::new();
+        File::open(&info.path)
+            .map_err(resource_error)?
+            .take(MAX_ARCHIVE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(resource_error)?;
+        if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+            return Err("资源包文件超过 384 MiB。".into());
+        }
+        Ok(bytes)
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let path = self.entry(id)?;
-        let staging = self.root.join(format!(".removed-{}", Uuid::new_v4()));
-        fs::rename(&path, &staging).map_err(message)?;
-        if let Err(err) = fs::remove_dir_all(&staging) {
-            if staging.join("pack.json").exists() {
-                let _ = fs::rename(&staging, &path);
-            }
-            return Err(message(err));
-        }
+        let (entry, _) = self.entry(id)?;
+        fs::remove_file(entry.join("pack.json")).map_err(message)?;
+        let _ = fs::remove_dir(&entry);
         Ok(())
     }
 
-    fn entry(&self, id: &str) -> Result<PathBuf, String> {
+    fn entry(&self, id: &str) -> Result<(PathBuf, PackInfo), String> {
         if !valid_id(id) {
             return Err("资源包 ID 无效。".into());
         }
         let path = self.root.join(id);
-        if is_link(&path).map_err(message)? || !path.is_dir() || read_info(&path)?.id != id {
+        let metadata = fs::symlink_metadata(&path).map_err(message)?;
+        if !metadata.is_dir() || is_link(&metadata) {
             return Err("资源包不存在。".into());
         }
-        Ok(path)
+        let info = read_info(&path)?;
+        if info.id != id {
+            return Err("资源包不存在。".into());
+        }
+        Ok((path, info))
     }
 }
 
@@ -227,58 +217,39 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn read_info(path: &Path) -> Result<PackInfo, String> {
-    serde_json::from_reader(File::open(path.join("pack.json")).map_err(message)?).map_err(message)
+    let file = File::open(path.join("pack.json")).map_err(message)?;
+    let mut info: PackInfo = serde_json::from_reader(file).map_err(message)?;
+    if info.path.as_os_str().is_empty() {
+        // Older entries only recorded the name and kind of the stored copy.
+        info.path = path.join(match info.kind {
+            PackKind::Zip => "pack.zip",
+            PackKind::Jar => "pack.jar",
+            PackKind::Folder => "folder",
+        });
+    }
+    Ok(info)
 }
 
 fn message(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-fn is_link(path: &Path) -> io::Result<bool> {
-    let metadata = fs::symlink_metadata(path)?;
+fn resource_error(error: io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::NotFound => format!("找不到资源包或其中的文件。{error}"),
+        io::ErrorKind::PermissionDenied => format!("没有读取资源包的权限。{error}"),
+        _ => error.to_string(),
+    }
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        Ok(metadata.file_attributes() & 0x400 != 0) // Reparse point, including directory junctions.
+        metadata.file_attributes() & 0x400 != 0 // Reparse point, including directory junctions.
     }
     #[cfg(not(windows))]
-    Ok(metadata.file_type().is_symlink())
-}
-
-fn copy_folder(
-    source: &Path,
-    target: &Path,
-    bytes: &mut u64,
-    entries: &mut usize,
-    depth: usize,
-) -> Result<(), String> {
-    if depth > 64 {
-        return Err("资源包目录层级过深。".into());
-    }
-    fs::create_dir(target).map_err(message)?;
-    for entry in fs::read_dir(source).map_err(message)? {
-        let entry = entry.map_err(message)?;
-        let path = entry.path();
-        if is_link(&path).map_err(message)? {
-            continue;
-        }
-        *entries += 1;
-        if *entries > MAX_FOLDER_ENTRIES {
-            return Err("资源包中的文件数量超过上限。".into());
-        }
-        let target = target.join(entry.file_name());
-        let metadata = entry.metadata().map_err(message)?;
-        if metadata.is_dir() {
-            copy_folder(&path, &target, bytes, entries, depth + 1)?;
-        } else if metadata.is_file() {
-            *bytes = bytes.saturating_add(metadata.len());
-            if *bytes > MAX_FOLDER_BYTES {
-                return Err("资源包文件夹超过 1 GiB。".into());
-            }
-            fs::copy(&path, target).map_err(message)?;
-        }
-    }
-    Ok(())
+    metadata.file_type().is_symlink()
 }
 
 fn supported(path: &str) -> bool {
@@ -323,64 +294,47 @@ fn valid_namespace(namespace: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || b"_.-".contains(&ch))
 }
 
-fn validate_archive(path: &Path) -> Result<(), String> {
-    let file = File::open(path).map_err(message)?;
-    if file.metadata().map_err(message)?.len() > MAX_ARCHIVE_BYTES {
-        return Err("资源包文件超过 384 MiB。".into());
-    }
-    let mut archive = ZipArchive::new(file).map_err(message)?;
-    let mut bytes = 0_u64;
-    let mut found = false;
-    for index in 0..archive.len() {
-        let file = archive.by_index_raw(index).map_err(message)?;
-        if !file.is_file() || !supported(file.name()) {
-            continue;
+fn folder_archive(folder: &Path) -> Result<Vec<u8>, String> {
+    let assets = folder.join("assets");
+    match fs::metadata(&assets) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err("资源包中的 assets 路径不是文件夹。".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err("资源包目录缺少 assets 文件夹。".into());
         }
-        found = true;
-        bytes = bytes.saturating_add(file.size());
-        if bytes > MAX_ARCHIVE_BYTES {
-            return Err("资源包的可加载内容超过 384 MiB。".into());
-        }
+        Err(error) => return Err(resource_error(error)),
     }
-    if !found {
-        return Err("资源包中没有找到 assets 下的方块资源。".into());
-    }
-    Ok(())
-}
 
-fn folder_view(path: &Path) -> Result<PathBuf, String> {
-    let view = path.join(FOLDER_VIEW_NAME);
-    if !view.is_file() {
-        let mut staging = tempfile::NamedTempFile::new_in(path).map_err(message)?;
-        folder_archive(&path.join("folder"), staging.as_file_mut())?
-            .sync_all()
-            .map_err(message)?;
-        staging.persist(&view).map_err(message)?;
-        let _ = fs::remove_file(path.join("view.zip"));
-        let _ = fs::remove_file(path.join("view-v2.zip"));
-        let _ = fs::remove_file(path.join("view-v3.zip"));
-    }
-    Ok(view)
-}
-
-fn folder_archive<W: io::Write + io::Seek>(folder: &Path, output: W) -> Result<W, String> {
-    let mut zip = ZipWriter::new(output);
-    let mut pending = vec![folder.join("assets")];
+    // Use the same resource parser as ZIP and JAR packs. The archive is in memory only.
+    let mut zip = ZipWriter::new(io::Cursor::new(Vec::new()));
+    let mut pending = vec![assets];
     let data = folder.join("data");
-    if data.is_dir() && !is_link(&data).map_err(message)? {
-        pending.push(data);
+    match fs::metadata(&data) {
+        Ok(metadata) if metadata.is_dir() => pending.push(data),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(resource_error(error)),
     }
-    let mut size = 0_u64;
+    let mut remaining = MAX_ARCHIVE_BYTES;
+    let mut entries = 0;
     let mut found = false;
+    let too_large = "资源包的可加载内容超过 384 MiB。";
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(directory).map_err(message)? {
-            let entry = entry.map_err(message)?;
+        for entry in fs::read_dir(directory).map_err(resource_error)? {
+            let entry = entry.map_err(resource_error)?;
+            entries += 1;
+            if entries > MAX_FOLDER_ENTRIES {
+                return Err("资源包中的文件数量超过上限。".into());
+            }
             let path = entry.path();
-            let kind = entry.file_type().map_err(message)?;
-            if kind.is_dir() {
+            let metadata = entry.metadata().map_err(resource_error)?;
+            if is_link(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
                 pending.push(path);
-            } else if kind.is_file() {
+            } else if metadata.is_file() {
                 let name = path
                     .strip_prefix(folder)
                     .map_err(message)?
@@ -389,32 +343,48 @@ fn folder_archive<W: io::Write + io::Seek>(folder: &Path, output: W) -> Result<W
                 if !supported(&name) {
                     continue;
                 }
-                let mut input = File::open(path).map_err(message)?;
-                size = size.saturating_add(
-                    input.metadata().map_err(message)?.len() + 2 * name.len() as u64 + 80,
-                );
-                if size >= MAX_ARCHIVE_BYTES {
-                    return Err("资源包的可加载内容超过 384 MiB。".into());
+                remaining = remaining
+                    .checked_sub(2 * name.len() as u64 + 80)
+                    .ok_or(too_large)?;
+                if metadata.len() > remaining {
+                    return Err(too_large.into());
                 }
+                let input = File::open(path).map_err(resource_error)?;
                 found = true;
                 zip.start_file(name, options).map_err(message)?;
-                io::copy(&mut input, &mut zip).map_err(message)?;
+                let copied =
+                    io::copy(&mut input.take(remaining + 1), &mut zip).map_err(resource_error)?;
+                remaining = remaining.checked_sub(copied).ok_or(too_large)?;
             }
         }
     }
     if !found {
         return Err("资源包中没有找到 assets 下的方块资源。".into());
     }
-    zip.finish().map_err(message)
+    let bytes = zip.finish().map_err(message)?.into_inner();
+    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+        return Err(too_large.into());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::Write;
+    use zip::ZipArchive;
 
     const BLOCKSTATE: &str = "assets/fixture/blockstates/test_block.json";
     const JSON: &str = r#"{"variants":{"":{"model":"fixture:block/test_block"}}}"#;
+
+    fn archive_bytes(contents: &str) -> Vec<u8> {
+        let mut archive = ZipWriter::new(io::Cursor::new(Vec::new()));
+        archive
+            .start_file(BLOCKSTATE, SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(contents.as_bytes()).unwrap();
+        archive.finish().unwrap().into_inner()
+    }
 
     #[test]
     fn lists_zip_and_jar_files_in_the_selected_directory_in_filename_order() {
@@ -432,31 +402,37 @@ mod tests {
     }
 
     #[test]
-    fn archive_copies_survive_source_removal_and_store_reopen() {
+    fn archive_links_keep_the_original_path_and_survive_missing_sources() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("resource-packs");
-        let mut expected = Vec::new();
-        for extension in ["zip", "jar"] {
+        let initial = archive_bytes(JSON);
+        let updated = archive_bytes("{}");
+        for extension in ["zip", "JAR"] {
             let path = temporary.path().join(format!("fixture.{extension}"));
-            let mut archive = ZipWriter::new(File::create(&path).unwrap());
-            archive
-                .start_file(BLOCKSTATE, SimpleFileOptions::default())
-                .unwrap();
-            archive.write_all(JSON.as_bytes()).unwrap();
-            drop(archive.finish().unwrap());
-
-            let bytes = fs::read(&path).unwrap();
+            fs::write(&path, &initial).unwrap();
             let info = PackStore::new(root.clone()).import(&path).unwrap();
-            fs::remove_file(path).unwrap();
-            expected.push((info.id, info.name, bytes));
-        }
+            assert_eq!(info.path, path);
+            let entry = root.join(&info.id);
+            assert_eq!(fs::read_dir(&entry).unwrap().count(), 1);
+            assert!(entry.join("pack.json").is_file());
 
-        let reopened = PackStore::new(root);
-        let packs = reopened.list().unwrap();
-        assert_eq!(packs.len(), 2);
-        for (id, name, bytes) in expected {
-            assert!(packs.iter().any(|pack| pack.id == id && pack.name == name));
-            assert_eq!(reopened.bytes(&id).unwrap(), bytes);
+            fs::remove_file(&path).unwrap();
+            let reopened = PackStore::new(root.clone());
+            let listed = reopened.list().unwrap().pop().unwrap();
+            assert_eq!(listed.id, info.id);
+            assert_eq!(listed.path, path);
+            assert!(
+                reopened
+                    .bytes(&info.id)
+                    .unwrap_err()
+                    .contains("找不到资源包")
+            );
+
+            fs::write(&path, &updated).unwrap();
+            assert_eq!(reopened.bytes(&info.id).unwrap(), updated);
+            reopened.remove(&info.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), updated);
+            assert!(reopened.list().unwrap().is_empty());
         }
     }
 
@@ -501,10 +477,10 @@ mod tests {
     }
 
     #[test]
-    fn folder_copies_are_read_from_the_global_store() {
+    fn folder_links_read_live_project_resources_without_a_disk_archive() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("resource-packs");
-        let folder = temporary.path().join("fixture-folder");
+        let folder = temporary.path().join("workspace/src/main/resources");
         let source = folder.join(BLOCKSTATE);
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::write(&source, JSON).unwrap();
@@ -520,24 +496,16 @@ mod tests {
             r#"{"block.fixture.test_block":"テスト"}"#,
         )
         .unwrap();
-        fs::write(folder.join("README.txt"), "full folder copy").unwrap();
+        let banner = "data/fixture/banner_pattern/test.json";
+        fs::create_dir_all(folder.join(banner).parent().unwrap()).unwrap();
+        fs::write(folder.join(banner), r#"{"asset_id":"fixture:test"}"#).unwrap();
+        fs::write(folder.join("README.txt"), "ignored").unwrap();
 
         let info = PackStore::new(root.clone()).import(&folder).unwrap();
-        fs::write(source, "changed source").unwrap();
-        let stored = root.join(&info.id);
-        fs::remove_file(stored.join(FOLDER_VIEW_NAME)).unwrap();
-        let mut old_view = ZipWriter::new(File::create(stored.join("view-v2.zip")).unwrap());
-        old_view
-            .start_file(BLOCKSTATE, SimpleFileOptions::default())
-            .unwrap();
-        old_view.write_all(JSON.as_bytes()).unwrap();
-        drop(old_view.finish().unwrap());
+        let updated = r#"{"variants":{"":{"model":"fixture:block/updated"}}}"#;
+        fs::write(&source, updated).unwrap();
         let reopened = PackStore::new(root.clone());
-        assert_eq!(reopened.list().unwrap()[0].id, info.id);
-        assert_eq!(
-            fs::read_to_string(root.join(&info.id).join("folder/README.txt")).unwrap(),
-            "full folder copy"
-        );
+        assert_eq!(reopened.list().unwrap()[0].path, folder);
         let bytes = reopened.bytes(&info.id).unwrap();
         let mut archive = ZipArchive::new(io::Cursor::new(bytes)).unwrap();
         let mut json = String::new();
@@ -546,7 +514,7 @@ mod tests {
             .unwrap()
             .read_to_string(&mut json)
             .unwrap();
-        assert_eq!(json, JSON);
+        assert_eq!(json, updated);
         json.clear();
         archive
             .by_name(item)
@@ -555,7 +523,57 @@ mod tests {
             .unwrap();
         assert_eq!(json, item_json);
         assert!(archive.by_name(language).is_ok());
+        assert!(archive.by_name(banner).is_ok());
+        assert!(archive.by_name("README.txt").is_err());
+        assert_eq!(fs::read_dir(root.join(&info.id)).unwrap().count(), 1);
+        fs::rename(folder.join("assets"), folder.join("assets-offline")).unwrap();
+        assert!(
+            reopened
+                .bytes(&info.id)
+                .unwrap_err()
+                .contains("缺少 assets")
+        );
+        assert_eq!(reopened.list().unwrap()[0].id, info.id);
         reopened.remove(&info.id).unwrap();
         assert!(reopened.list().unwrap().is_empty());
+        assert!(folder.join("assets-offline").is_dir());
+    }
+
+    #[test]
+    fn old_entries_read_the_existing_local_sources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut ids = Vec::new();
+        for (kind, name) in [
+            ("zip", "pack.zip"),
+            ("jar", "pack.jar"),
+            ("folder", "folder"),
+        ] {
+            let id = format!("0000000000000-{}", Uuid::new_v4());
+            let entry = temporary.path().join(&id);
+            fs::create_dir(&entry).unwrap();
+            let metadata = serde_json::json!({ "id": id, "name": name, "kind": kind });
+            fs::write(entry.join("pack.json"), metadata.to_string()).unwrap();
+            let path = entry.join(name);
+            if kind == "folder" {
+                let file = path.join(BLOCKSTATE);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(file, JSON).unwrap();
+                fs::write(entry.join("view-v4.zip"), "stale cache").unwrap();
+            } else {
+                fs::write(&path, archive_bytes(JSON)).unwrap();
+            }
+            ids.push((id, path));
+        }
+        let store = PackStore::new(temporary.path().to_owned());
+        let packs = store.list().unwrap();
+        for (id, path) in ids {
+            assert!(packs.iter().any(|pack| pack.id == id && pack.path == path));
+            let bytes = store.bytes(&id).unwrap();
+            let mut archive = ZipArchive::new(io::Cursor::new(bytes)).unwrap();
+            assert!(archive.by_name(BLOCKSTATE).is_ok());
+            store.remove(&id).unwrap();
+            assert!(path.exists());
+        }
+        assert!(store.list().unwrap().is_empty());
     }
 }

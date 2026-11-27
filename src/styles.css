@@ -333,6 +333,8 @@ kbd {
 .pack-row > div { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .pack-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 580; }
 .pack-row span { color: var(--dim); font-size: 10px; }
+.pack-row .pack-load-error { color: #ffb6a6; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.pack-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shortcuts { display: grid; gap: 10px; padding: 15px 18px; }
 .shortcuts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .shortcuts dt { color: #ced7e2; }
