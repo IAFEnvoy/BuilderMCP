@@ -1,7 +1,7 @@
 import {
   Box, Boxes, BoxSelect, Check, ChevronDown, CircleAlert, CircleDot, CircleHelp, ClipboardPaste, Copy,
   Download, Eraser, FileBox, FilePlus, FolderArchive, FolderOpen, Grid3x3, GripVertical, ImageDown, Languages, Layers, Mouse, MousePointer2,
-  Move3d, Package, PackagePlus, PaintBucket, Pipette, Play, Plus, Redo2, Replace, RotateCcw, RotateCw,
+  Move3d, Package, PackagePlus, PaintBucket, Pipette, Play, Plus, Redo2, RefreshCw, Replace, RotateCcw, RotateCw,
   Save, Scan, ScanLine, Search, Settings2, SlidersHorizontal, Square, SquareDashedMousePointer, Trash2, Undo2, X, createElement,
 } from 'lucide';
 import { isAbsolute } from '@tauri-apps/api/path';
@@ -53,7 +53,7 @@ const icons = {
   eraser: Eraser, 'file-box': FileBox, 'file-plus': FilePlus, 'folder-archive': FolderArchive, 'folder-open': FolderOpen,
   'grid-3x3': Grid3x3, 'grip-vertical': GripVertical, 'image-down': ImageDown,
   languages: Languages, layers: Layers, mouse: Mouse, 'mouse-pointer-2': MousePointer2, 'move-3d': Move3d, package: Package,
-  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, play: Play, plus: Plus, 'redo-2': Redo2, replace: Replace,
+  'package-plus': PackagePlus, 'paint-bucket': PaintBucket, pipette: Pipette, play: Play, plus: Plus, 'redo-2': Redo2, 'refresh-cw': RefreshCw, replace: Replace,
   'rotate-ccw': RotateCcw, 'rotate-cw': RotateCw, save: Save, scan: Scan, 'scan-line': ScanLine, search: Search,
   'settings-2': Settings2, 'sliders-horizontal': SlidersHorizontal, square: Square, 'square-dashed-mouse-pointer': SquareDashedMousePointer,
   'trash-2': Trash2, 'undo-2': Undo2, x: X,
@@ -1174,7 +1174,7 @@ function updatePackControls() {
   const canSort = desktop && !packBusy && packs.size > 1;
   packSorter.option('disabled', !canSort);
   for (const button of packImportButtons) button.disabled = packBusy || !desktop;
-  for (const button of packList.querySelectorAll('.pack-remove')) button.disabled = packBusy;
+  for (const button of packList.querySelectorAll('.pack-reload, .pack-remove')) button.disabled = packBusy;
   for (const button of packList.querySelectorAll('.pack-handle')) button.disabled = !canSort;
 }
 
@@ -1229,7 +1229,10 @@ function renderPacks() {
       detail.title = [...pack.data.languages.keys()].map(localeName).join('、');
     }
     detail.textContent = pack.error ? `加载失败 · ${pack.error}` : pack.data ? [kind, ...summary].join(' · ') : '正在加载…';
-    if (pack.error) detail.className = 'pack-load-error';
+    if (pack.error) {
+      detail.className = 'pack-load-error';
+      if (pack.data) detail.append('（仍使用上次加载的资源）');
+    }
     text.append(name, detail);
     if (pack.path) {
       const source = document.createElement('span');
@@ -1237,6 +1240,13 @@ function renderPacks() {
       source.textContent = source.title = pack.path;
       text.append(source);
     }
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.className = 'icon-button small pack-reload';
+    reload.title = '重新加载资源包';
+    reload.setAttribute('aria-label', `重新加载 ${pack.name}`);
+    reload.append(icon('refresh-cw'));
+    reload.addEventListener('click', () => reloadPack(pack.id));
     const remove = document.createElement('button');
     remove.className = 'icon-button small danger pack-remove';
     remove.title = '从资源包列表移除';
@@ -1248,7 +1258,7 @@ function renderPacks() {
       updateCatalog();
       status(`已移除 ${pack.name}`);
     }));
-    row.append(handle, text, remove);
+    row.append(handle, text, reload, remove);
     packList.append(row);
   }
   updatePackControls();
@@ -1286,6 +1296,7 @@ async function loadPack(pack, total, completed) {
     pack.data = await loadArchive(await packsOnDisk.read(pack.id), ({ stage, processed, total: files }) => {
       showPackProgress({ ...progress, stage: stage === 'unpack' ? '解压资源' : '索引文件', processed, files });
     });
+    delete pack.error;
   } catch (error) {
     pack.error = errorMessage(error);
   }
@@ -1315,6 +1326,26 @@ async function runPackAction(action, refreshList, propagateError) {
     showPackProgress(null);
     refreshList();
   }
+}
+
+function reloadPack(id) {
+  return packAction(async () => {
+    const pack = packs.get(id);
+    if (!pack) return;
+    await loadPack(pack, 1, 0);
+    if (pack.error) {
+      status(`重新加载 ${pack.name} 失败`);
+      return;
+    }
+    showPackProgress({ total: 1, completed: 1, name: pack.name, stage: '更新方块库' });
+    updateCatalog();
+    status(`已重新加载 ${pack.name}`);
+  }, { refreshList: () => {
+    renderPacks();
+    if (byId('pack-dialog').open) {
+      packList.querySelector(`[data-pack-id="${CSS.escape(id)}"] .pack-reload`)?.focus({ preventScroll: true });
+    }
+  } });
 }
 
 function savePackOrder(displayOrder, movedId) {
