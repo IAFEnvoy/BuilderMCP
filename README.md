@@ -52,6 +52,8 @@ npm run tauri dev
 
 方块库、视口和画笔使用全局资源包提供的方块定义、模型和纹理。缺少模型时显示紫黑棋盘格方块，缺少纹理时在模型对应表面显示棋盘格。视口支持 `variants`、`multipart`、模型继承、元素旋转、UV 和半透明材质。方块库优先用 `items` 指定的库存模型，兼容旧版 `models/item`，并应用 GUI 变换和染色。动画纹理使用首帧。需要原版模型和纹理的第三方资源包可放在对应版本的 Minecraft 客户端 JAR 上方。
 
+视口根据模型 JSON 和 Create 风格的 `*_connected.png` 图集渲染连接纹理。相邻同类方块会按面方向、模型 UV 和可见边角选取图块，编辑、回放和场景截图会应用这一效果。依赖模组运行时数据的连通规则仍按编辑器可读取的模型和方块状态预览。[Create 图集布局](https://github.com/Creators-of-Create/Create/blob/mc1.21.1-6.0.10/src/main/java/com/simibubi/create/foundation/block/connected/AllCTTypes.java)
+
 方块库上方可以切换方块语言，默认简体中文，选择会随应用保存。ZIP、JAR 和文件夹里的 `assets/<namespace>/lang` 会自动提供语言选项，支持 JSON 和旧版 `.lang`。导入原版客户端 JAR 后，编辑器也会按对应版本读取 Minecraft 或 Gradle 的语言缓存，必要时从 Mojang 获取语言文件并保存到 AppData。
 
 方块名称先查所选语言，缺失时逐条回退到美式英语。每种语言依次查找 `block.<namespace>.<path>` 和 `item.<namespace>.<path>`，同名翻译键优先用导入资源包的值。两种语言都缺失时显示 `block.<namespace>.<path>` 原文。资源 ID 中的 `/` 会按 Minecraft 译名规则转换成 `.`。

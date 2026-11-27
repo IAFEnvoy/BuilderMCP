@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { boxBetween, boundsOf, MAX_BLOCKS, MAX_COORDINATE } from './scene.js';
-import { applyTexture, buildGeometry, materialKey, tintFor } from './model-geometry.js';
+import { boxBetween, boundsOf, cellKey, MAX_BLOCKS, MAX_COORDINATE } from './scene.js';
+import { applyTexture, buildGeometry, connectedModelFaces, materialKey, tintFor } from './model-geometry.js';
+import { connectFaces } from './connected-textures.js';
 import { createTexturePlayer } from './texture-animation.js';
 
 const Y_UP = new THREE.Vector3(0, 1, 0);
@@ -16,7 +17,9 @@ const HALF_FOV_TANGENT = Math.tan(THREE.MathUtils.degToRad(FIELD_OF_VIEW / 2));
 const MIN_CAMERA_DISTANCE = 0.75;
 const MAX_CAMERA_DISTANCE = 4_000_000;
 const CLICK_TOLERANCE = 5;
-const chunkKey = pos => pos.map(n => Math.floor(n / 16)).join(',');
+const CHUNK_SIZE = 16;
+const chunkIndex = n => Math.floor(n / CHUNK_SIZE);
+const chunkKey = (x, y, z) => [chunkIndex(x), chunkIndex(y), chunkIndex(z)].join(',');
 
 function workGrid() {
   const geometry = new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
@@ -147,6 +150,7 @@ export class Viewport {
     this.chunks = new Map();
     this.views = new Map();
     this.models = new Map();
+    this.connectedFaces = new Map();
     this.materials = new Map();
     this.textures = new Map();
     this.animatedTextures = new Set();
@@ -278,6 +282,7 @@ export class Viewport {
     for (const { material } of this.materials.values()) material.dispose();
     for (const { texture } of this.textures.values()) texture.dispose();
     this.models.clear();
+    this.connectedFaces.clear();
     this.materials.clear();
     this.textures.clear();
     for (const key of this.chunks.keys()) this.rebuildChunk(key);
@@ -300,13 +305,22 @@ export class Viewport {
   updateBlocks(changes, side) {
     const dirty = new Set();
     for (const [key, change] of changes) {
-      const chunk = chunkKey((change.before ?? change.after).pos);
+      const [x, y, z] = (change.before ?? change.after).pos;
+      const chunk = chunkKey(x, y, z);
       const block = change[side];
       if (block) {
         if (!this.chunks.has(chunk)) this.chunks.set(chunk, new Map());
         this.chunks.get(chunk).set(key, block);
       } else this.chunks.get(chunk)?.delete(key);
       dirty.add(chunk);
+      if (this.catalog.connectedSheets.size) {
+        // CT context can include a face-diagonal neighbor in another chunk.
+        for (let cx = chunkIndex(x - 1); cx <= chunkIndex(x + 1); cx++) {
+          for (let cy = chunkIndex(y - 1); cy <= chunkIndex(y + 1); cy++) {
+            for (let cz = chunkIndex(z - 1); cz <= chunkIndex(z + 1); cz++) dirty.add([cx, cy, cz].join(','));
+          }
+        }
+      }
     }
     for (const key of dirty) this.rebuildChunk(key);
   }
@@ -343,6 +357,7 @@ export class Viewport {
       this.markers.delete(mesh);
       const source = mesh.userData.textureSource;
       if (--source.users === 0) this.animatedTextures.delete(source);
+      if (mesh.userData.ownsGeometry) mesh.geometry.dispose();
       mesh.dispose();
     }
     this.group.remove(view);
@@ -352,7 +367,7 @@ export class Viewport {
     this.clearViews();
     this.chunks.clear();
     for (const [key, block] of blocks) {
-      const chunk = chunkKey(block.pos);
+      const chunk = chunkKey(...block.pos);
       if (!this.chunks.has(chunk)) this.chunks.set(chunk, new Map());
       this.chunks.get(chunk).set(key, block);
     }
@@ -367,19 +382,29 @@ export class Viewport {
     const blocks = this.chunks.get(key);
     if (!blocks?.size) { this.chunks.delete(key); return; }
     const batches = new Map();
+    const blockAt = this.catalog.connectedSheets.size
+      ? (x, y, z) => this.chunks.get(chunkKey(x, y, z))?.get(cellKey([x, y, z]))
+      : undefined;
     for (const { pos, state, blockEntity } of blocks.values()) {
       const tint = tintFor(state.name);
-      for (const part of this.catalog.parts(state, pos, blockEntity)) {
-        const id = `${part.key}|${tint.getHexString()}`;
-        if (!batches.has(id)) batches.set(id, { part, tint, cells: [] });
+      for (const part of this.catalog.parts(state, pos, blockEntity, blockAt)) {
+        let connection;
+        if (blockAt) {
+          if (!this.connectedFaces.has(part.key)) this.connectedFaces.set(part.key, connectedModelFaces(this.catalog, part));
+          const faces = this.connectedFaces.get(part.key);
+          if (faces.length) connection = connectFaces(faces, state, this.catalog.blocks.get(state.name)?.state.properties, pos, blockAt);
+        }
+        const id = `${part.key}|${tint.getHexString()}${connection ? '|' + connection.key : ''}`;
+        if (!batches.has(id)) batches.set(id, { part, tint, connection, cells: [] });
         batches.get(id).cells.push(pos);
       }
     }
     const view = new THREE.Group();
-    for (const [id, { part, tint, cells }] of batches) {
-      if (!this.models.has(id)) this.models.set(id, buildGeometry(this.catalog, part, tint));
+    for (const [id, { part, tint, connection, cells }] of batches) {
+      if (!connection && !this.models.has(id)) this.models.set(id, buildGeometry(this.catalog, part, tint));
+      const geometries = connection ? buildGeometry(this.catalog, part, tint, false, connection.patches) : this.models.get(id);
       const matrix = new THREE.Matrix4();
-      for (const batch of this.models.get(id)) {
+      for (const batch of geometries) {
         const { material, source } = this.material(batch);
         source.users++;
         if (source.player) this.animatedTextures.add(source);
@@ -387,6 +412,7 @@ export class Viewport {
         cells.forEach((pos, index) => mesh.setMatrixAt(index, matrix.makeTranslation(...pos)));
         mesh.userData.cells = cells;
         mesh.userData.textureSource = source;
+        mesh.userData.ownsGeometry = Boolean(connection);
         if (part.marker) {
           this.markers.add(mesh);
           this.markerRotation.set(0, 0, 0, 0);
@@ -420,7 +446,9 @@ export class Viewport {
     const texture = new THREE.CanvasTexture();
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestMipmapLinearFilter;
+    const atlas = catalog.connectedSheets.has(key);
+    texture.generateMipmaps = !atlas;
+    texture.minFilter = atlas ? THREE.NearestFilter : THREE.NearestMipmapLinearFilter;
     texture.anisotropy = Math.min(this.renderer.capabilities.getMaxAnisotropy(), 4);
     const source = { texture, users: 0, player: null };
     source.ready = catalog.textureImage(key).then(image => {

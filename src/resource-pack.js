@@ -3,6 +3,7 @@ import { DEFAULT_LOCALE, ENGLISH_LOCALE, normalizeLocale } from './locales.js';
 import { isAir, stateOf } from './scene.js';
 import { specialBlockPart, specialBlockProperties } from './special-blocks.js';
 import { decodeTexture, TEXTURE_TICK_MS } from './texture-animation.js';
+import { readConnectedSheet } from './connected-textures.js';
 
 const assetPath = /^(?:[^/]+\/)*?assets\/([a-z0-9_.-]+)\/(blockstates|models|items|textures|lang)\/(.+)$/;
 const bannerPatternPath = /^(?:[^/]+\/)*?data\/([a-z0-9_.-]+)\/banner_pattern\/([a-z0-9_./-]+)\.json$/;
@@ -83,7 +84,7 @@ export async function loadArchive(bytes, progress) {
       },
     }, (error, data) => error ? reject(error) : resolve(data));
   });
-  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), animation: new Map(), languages: new Map(), bannerPatterns: new Map(), minecraftVersion: null };
+  const pack = { states: new Map(), models: new Map(), items: new Map(), textures: new Map(), connectedSheets: new Map(), animation: new Map(), languages: new Map(), bannerPatterns: new Map(), minecraftVersion: null };
   const languageEntries = [];
   const entries = Object.entries(files);
   const total = entries.length;
@@ -122,8 +123,15 @@ export async function loadArchive(bytes, progress) {
     }
     processed++;
     if (kind === 'textures') {
-      if (path.endsWith('.png')) pack.textures.set(id('.png'), data);
-      else pack.animation.set(id('.png.mcmeta'), parseJson(data)?.animation);
+      if (path.endsWith('.png')) {
+        const key = id('.png');
+        pack.textures.set(key, data);
+        if (path.endsWith('_connected.png')) {
+          const sheet = await readConnectedSheet(data);
+          if (sheet) pack.connectedSheets.set(key, sheet);
+          else pack.connectedSheets.delete(key);
+        }
+      } else pack.animation.set(id('.png.mcmeta'), parseJson(data)?.animation);
       continue;
     }
     const value = parseJson(data);
@@ -248,6 +256,7 @@ function chooseWeighted(value, pos, salt) {
 
 export class BlockCatalog {
   #blocksByNamespace = new Map();
+  #connectedPanes = new Map();
   #animationStart = performance.now();
 
   constructor(packs = [], locale = DEFAULT_LOCALE, officialLanguages = new Map()) {
@@ -255,6 +264,7 @@ export class BlockCatalog {
     this.models = new Map();
     this.items = new Map();
     this.textures = new Map();
+    this.connectedSheets = new Map();
     this.languages = new Map();
     this.bannerPatterns = new Map();
     this.locale = locale;
@@ -267,7 +277,12 @@ export class BlockCatalog {
       for (const [key, value] of pack.models) this.models.set(key, value);
       for (const [key, value] of pack.items ?? []) this.items.set(key, value);
       for (const [key, value] of pack.bannerPatterns ?? []) this.bannerPatterns.set(key, value);
-      for (const [key, bytes] of pack.textures) this.textures.set(key, { bytes });
+      for (const [key, bytes] of pack.textures) {
+        this.textures.set(key, { bytes });
+        const sheet = pack.connectedSheets?.get(key);
+        if (sheet) this.connectedSheets.set(key, { ...sheet, textures: pack.textures });
+        else this.connectedSheets.delete(key);
+      }
       for (const [key, animation] of pack.animation) {
         const texture = this.textures.get(key);
         if (texture) texture.animation = animation;
@@ -415,6 +430,7 @@ export class BlockCatalog {
       name, textures, elements: ownElements ? definition.elements : parent?.elements ?? [],
       generated: !ownElements && Boolean(parent?.generated),
       namespace: ownElements ? namespace : parent?.namespace ?? namespace,
+      connectedPane: /(?:^|\/)connected_glass_pane\//.test(name) || parent?.connectedPane === true,
       gui: definition.display?.gui ?? parent?.gui,
       guiLight: definition.gui_light ?? parent?.guiLight,
     };
@@ -463,7 +479,7 @@ export class BlockCatalog {
     });
   }
 
-  parts(state, pos, entity) {
+  parts(state, pos, entity, blockAt) {
     const { name, properties = {} } = state;
     if (isAir(name)) return [];
     const definition = this.states.get(name);
@@ -471,10 +487,25 @@ export class BlockCatalog {
     let particle;
     if (definition) {
       const variants = variantsOf(definition);
+      const multipart = partsOf(definition);
+      const namespace = namespaceOf(name);
+      if (blockAt && this.connectedSheets.size && multipart.length) {
+        if (!this.#connectedPanes.has(name)) {
+          const pane = multipart.some(part => [part?.apply].flat().some(choice =>
+            typeof choice?.model === 'string' && this.modelRef(choice.model, namespace)?.connectedPane));
+          this.#connectedPanes.set(name, pane);
+        }
+        if (this.#connectedPanes.get(name)) {
+          const [x, y, z] = pos;
+          const neighbors = { north: [x, y, z - 1], east: [x + 1, y, z], south: [x, y, z + 1], west: [x - 1, y, z] };
+          for (const [direction, cell] of Object.entries(neighbors)) {
+            if (blockAt(...cell)?.state.name === name) completed[direction] = 'true';
+          }
+        }
+      }
       const match = variants.find(([key]) => key && accepts(variantCondition(key), completed)) ?? variants.find(([key]) => !key) ?? variants[0];
       const choices = match ? [match[1]] : [];
-      for (const part of partsOf(definition)) if (part?.apply && accepts(part.when, completed)) choices.push(part.apply);
-      const namespace = namespaceOf(name);
+      for (const part of multipart) if (part?.apply && accepts(part.when, completed)) choices.push(part.apply);
       const parts = choices.flatMap((choice, i) => {
         const selected = chooseWeighted(choice, pos, i);
         if (typeof selected?.model !== 'string') return [];

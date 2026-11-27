@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { sheetForFace } from './connected-textures.js';
 
 const corners = {
   down: [[0, 0, 1], [0, 0, 0], [1, 0, 0], [1, 0, 1]],
@@ -73,6 +74,68 @@ function elementTransform(rotation) {
     .multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
 }
 
+function modelRotation({ x = 0, y = 0, z = 0 }) {
+  return new THREE.Quaternion().setFromEuler(new THREE.Euler(-x * radians, -y * radians, -z * radians, 'ZYX'));
+}
+
+function faceUvs(face, direction, from, to, uvTransform) {
+  const [u0, v0, u1, v1] = numericVec(face.uv, 4) ? face.uv : defaultUv(direction, from, to);
+  const corners = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
+  const turn = Number.isInteger(face.rotation / 90) ? (face.rotation / 90 % 4 + 4) % 4 : 0;
+  return corners.map((_, index) => {
+    const [u, v] = corners[(index + turn) % 4];
+    if (!uvTransform) return [u, v];
+    const [a, b, c, d] = uvTransform;
+    return [8 + a * (u - 8) + b * (v - 8), 8 + c * (u - 8) + d * (v - 8)];
+  });
+}
+
+function cardinal(vector) {
+  const values = vector.toArray();
+  const snapped = values.map(Math.round);
+  return snapped.every((n, i) => Math.abs(n - values[i]) < 0.001) && snapped.reduce((sum, n) => sum + Math.abs(n), 0) === 1 ? snapped : null;
+}
+
+export function connectedModelFaces(catalog, part) {
+  if (!catalog.connectedSheets.size || part.marker) return [];
+  const { model, uvlock } = part;
+  const rotation = modelRotation(part);
+  const connected = [];
+  const interior = [];
+  for (const [index, element] of model.elements.entries()) {
+    if (!numericVec(element?.from, 3) || !numericVec(element?.to, 3)) continue;
+    const transform = elementTransform(element.rotation);
+    const fullCube = !transform && element.from.every(n => n === 0) && element.to.every(n => n === 16);
+    const worldDirection = vector => {
+      vector = vector.clone();
+      if (transform) vector.transformDirection(transform);
+      return cardinal(vector.applyQuaternion(rotation));
+    };
+    for (const direction of faces) {
+      const face = element.faces?.[direction];
+      if (!face) continue;
+      const normal = worldDirection(new THREE.Vector3(...normals[direction]));
+      if (!normal) continue;
+      const key = index * faces.length + faces.indexOf(direction);
+      const cull = fullCube && face.cullface === direction;
+      const texture = catalog.textureMaterial(model, face.texture)?.texture;
+      const sheet = sheetForFace(catalog, model, texture, normal, model.connectedPane);
+      if (!sheet) {
+        if (cull) interior.push({ key, normal, cull });
+        continue;
+      }
+      const [topLeft, bottomLeft, , topRight] = faceUvs(face, direction, element.from, element.to, uvlock && lockUv(direction, rotation));
+      const { right, up } = faceAxes[direction];
+      const uAlongRight = Math.sign(topRight[0] - topLeft[0]);
+      const vAlongRight = Math.sign(topLeft[1] - topRight[1]);
+      const horizontal = worldDirection(uAlongRight ? right.clone().multiplyScalar(uAlongRight) : up.clone().multiplyScalar(Math.sign(topLeft[0] - bottomLeft[0])));
+      const vertical = worldDirection(vAlongRight ? right.clone().multiplyScalar(vAlongRight) : up.clone().multiplyScalar(Math.sign(bottomLeft[1] - topLeft[1])));
+      if (horizontal && vertical) connected.push({ key, sheet, normal, horizontal, vertical, cull });
+    }
+  }
+  return connected.length ? connected.concat(interior) : [];
+}
+
 export function tintFor(name) {
   if (name.endsWith('spruce_leaves')) return spruce;
   if (name.endsWith('birch_leaves')) return birch;
@@ -82,21 +145,24 @@ export function tintFor(name) {
   return white;
 }
 
-export function buildGeometry(catalog, part, tint = white, flatLight = false) {
-  const { model, x = 0, y = 0, z = 0, uvlock } = part;
-  const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(-x * radians, -y * radians, -z * radians, 'ZYX'));
+export function buildGeometry(catalog, part, tint = white, flatLight = false, patches) {
+  const { model, uvlock } = part;
+  const rotation = modelRotation(part);
   const uvTransforms = uvlock ? Object.fromEntries(faces.map(face => [face, lockUv(face, rotation)])) : {};
   const batches = new Map();
-  for (const element of model.elements) {
+  for (const [elementIndex, element] of model.elements.entries()) {
     if (!numericVec(element?.from, 3) || !numericVec(element?.to, 3)) continue;
     const { from, to } = element;
     if ([...from, ...to].some(value => Math.abs(value) > 512)) continue;
     const transform = elementTransform(element.rotation);
-    for (const direction of faces) {
+    for (const [faceIndex, direction] of faces.entries()) {
       const face = element.faces?.[direction];
       if (!face) continue;
+      const patch = patches?.get(elementIndex * faces.length + faceIndex);
+      if (patch === false) continue;
       const resolved = catalog.textureMaterial(model, face.texture);
-      const material = catalog.textures.has(resolved?.texture) ? resolved : missingMaterial;
+      const material = patch ? { ...resolved, texture: patch.sheet.texture }
+        : catalog.textures.has(resolved?.texture) ? resolved : missingMaterial;
       const key = materialKey(material);
       if (!batches.has(key)) batches.set(key, { material, position: [], uv: [], color: [], indices: [] });
       const batch = batches.get(key);
@@ -114,18 +180,19 @@ export function buildGeometry(catalog, part, tint = white, flatLight = false) {
       const tinted = material !== missingMaterial && Number.isInteger(face.tintindex) && face.tintindex >= 0;
       const faceTint = tinted ? (Array.isArray(tint) ? tint[face.tintindex] ?? white : tint) : white;
       const color = faceTint.clone().multiplyScalar(light);
-      const [u0, v0, u1, v1] = numericVec(face.uv, 4) ? face.uv : defaultUv(direction, from, to);
-      const uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
-      const turn = Number.isInteger(face.rotation / 90) ? (face.rotation / 90 % 4 + 4) % 4 : 0;
-      const uvTransform = uvTransforms[direction];
+      const uvs = faceUvs(face, direction, from, to, uvTransforms[direction]);
       vertices.forEach((vertex, index) => {
-        let [u, v] = uvs[(index + turn) % 4];
-        if (uvTransform) {
-          const [a, b, c, d] = uvTransform;
-          [u, v] = [8 + a * (u - 8) + b * (v - 8), 8 + c * (u - 8) + d * (v - 8)];
+        let [u, v] = uvs[index];
+        u /= 16;
+        v /= 16;
+        if (patch) {
+          const { sheet, tile } = patch;
+          // Sample within the selected tile while preserving cropped and rotated UVs.
+          u = (tile % sheet.size + u) / sheet.size + (0.5 - u) / sheet.width;
+          v = (Math.floor(tile / sheet.size) + v) / sheet.size + (0.5 - v) / sheet.height;
         }
         batch.position.push(vertex.x, vertex.y, vertex.z);
-        batch.uv.push(u / 16, 1 - v / 16);
+        batch.uv.push(u, 1 - v);
         batch.color.push(color.r, color.g, color.b);
       });
       batch.indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
